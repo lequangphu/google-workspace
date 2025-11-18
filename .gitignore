@@ -1,0 +1,19 @@
+# Data directories
+/python/data/raw/
+/python/data/interim/
+/python/data/final/
+
+# Python
+.venv/
+*.pyc
+.pytest_cache/
+__pycache__/
+archive/
+
+# Apps Script
+node_modules/
+.clasp.json
+
+# General
+.env
+.DS_Store
