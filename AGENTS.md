@@ -1,20 +1,38 @@
 # AGENTS.md
 
 ## Overview
-This repo agents automate Google Workspace workflows in Drive:
-- Google Apps Script (Node.js via clasp): Workflow automation.
-- Python (uv): Data analysis.
+This repository contains automation agents for Google Workspace Drive workflows:
+- **Google Apps Script** (clasp/Node.js): Server-side automation and Drive integration
+- **Python** (uv): Data processing and analysis
 
-## Structure
-- `/apps-script`: Apps Script files, `.clasp.json`.
-- `/python`: Python scripts, `pyproject.toml` (uv).
-- Root: `package.json` (clasp), shared configs.
+## Prerequisites
+- Node.js 16+
+- Python 3.10+
+- Google Cloud project with Drive API enabled
+- Google Workspace account
 
-## Setup
+## Directory Structure
+- `/apps-script/` - Apps Script source files (.gs, .html) and `.clasp.json` config
+  - See [`/apps-script/AGENTS.md`](/apps-script/AGENTS.md) for detailed setup and guidelines
+- `/python/` - Python scripts with `pyproject.toml` (managed by uv)
+  - See [`/python/AGENTS.md`](/python/AGENTS.md) for detailed setup and guidelines
+- Root - `package.json` for clasp/npm dependencies, shared configs
+
+## Quick Start
 ```bash
-# Root
+# Root setup
 npm install -g @google/clasp
 npm init -y  # if needed
 clasp login
-clasp clone <scriptId>  # in /apps-script
+
+# Then follow subdirectory-specific guides in their AGENTS.md files
 ```
+
+## Deployment
+[Add deployment instructions]
+
+## Environment Variables
+[Add required env vars]
+
+## Troubleshooting
+[Add common issues]
