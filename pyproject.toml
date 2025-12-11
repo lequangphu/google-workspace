@@ -8,5 +8,6 @@ dependencies = [
     "google-api-python-client",
     "google-auth-httplib2",
     "google-auth-oauthlib",
-    "pandas"
+    "ipython>=9.8.0",
+    "pandas",
 ]

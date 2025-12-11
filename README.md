@@ -1,35 +1,23 @@
 # Google Workspace Automation
 
-Automated workflows for Google Workspace using Google Apps Script and Python. Handles data ingestion from Google Drive, cleaning, and analysis.
+Automated workflows for Google Workspace using Python. Handles data ingestion from Google Drive, cleaning, and analysis.
 
 ## Structure
 
-- **`/apps-script`** - Google Apps Script automation (Node.js via clasp)
-- **`/python`** - Python data pipeline (uv package manager)
+- **Types** - Python data pipeline (uv package manager)
 - **`AGENTS.md`** - Development guidelines and setup instructions
 
 ## Setup
 
 ### Prerequisites
 
-- Node.js (for clasp)
 - Python 3.14+
 - Google Account with Drive access
 
 ### Installation
 
 ```bash
-# Install Google clasp globally
-npm install -g @google/clasp
-
-# Login to Google
-clasp login
-
-# Clone Apps Script project (in /apps-script directory)
-clasp clone <scriptId>
-
 # Setup Python environment
-cd python
 uv sync
 ```
 
@@ -40,8 +28,6 @@ Orchestrates a three-stage data pipeline: **ingest** → **clean** → **combine
 ### Quick Start
 
 ```bash
-cd python
-
 # Run full pipeline
 uv run python main.py
 
@@ -110,13 +96,9 @@ To add new dataset types:
 
 ## Dependencies
 
-### Python
 - `google-api-python-client` - Google Drive API
 - `google-auth-oauthlib` - Google authentication
 - `pandas` - Data manipulation
-
-### Node.js
-- `@google/clasp` - Google Apps Script development
 
 ## License
 
