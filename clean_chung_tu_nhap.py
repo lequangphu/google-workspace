@@ -506,11 +506,11 @@ final_combined_df = final_combined_df.drop(
     columns=["Verified_Ngày_temp_enforce"], errors="ignore"
 )
 
-# --- 5. Format 'Ngày' as Vietnamese date string (dd/mm/yyyy) ---
+# --- 5. Format 'Ngày' as ISO date string (YYYY-MM-DD) ---
 final_combined_df["Ngày"] = (
-    final_combined_df["Ngày"].dt.strftime("%d/%m/%Y").replace(pd.NA, None)
+    final_combined_df["Ngày"].dt.strftime("%Y-%m-%d").fillna("")
 )
-print("Formatted 'Ngày' column to 'dd/mm/yyyy' string format.")
+print("Formatted 'Ngày' column to 'YYYY-MM-DD' string format.")
 
 # --- Save to CSV ---
 output_dir = os.path.join(os.getcwd(), "data", "final")
