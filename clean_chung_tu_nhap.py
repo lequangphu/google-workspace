@@ -194,7 +194,10 @@ file_pattern = "*CT.NHAP.csv"
 full_pattern = os.path.join(directory_path, file_pattern)
 matching_files = glob.glob(full_pattern)
 
-print(f"Identified {len(matching_files)} CSV files for initial processing.")
+if len(matching_files) == 0:
+    print("No CSV files found for processing.")
+else:
+    print(f"Processing {len(matching_files)} CSV file(s)...")
 
 file_headers_map = {}
 for file_path in matching_files:
@@ -223,8 +226,7 @@ for file_path, (headers, indices) in file_headers_map.items():
 
 merged_dataframes = {}
 for i, (headers_tuple, files_and_indices_list) in enumerate(grouped_files.items()):
-    common_headers = list(headers_tuple)
-    print(f"\nProcessing Group {i + 1} with {len(files_and_indices_list)} files...")
+     common_headers = list(headers_tuple)
 
     group_dfs = []
     for file_path, original_indices in files_and_indices_list:
@@ -272,15 +274,8 @@ for i, (headers_tuple, files_and_indices_list) in enumerate(grouped_files.items(
             print(f"Error loading or processing file {file_path} for data: {e}")
 
     if group_dfs:
-        merged_df = pd.concat(group_dfs, ignore_index=True)
-        merged_dataframes[f"Group_{i + 1}"] = merged_df
-        print(f"Merged DataFrame for Group {i + 1}:")
-        print(merged_df.head())
-        print(merged_df.info(memory_usage="deep"))
-    else:
-        print(
-            f"No DataFrames were merged for Group {i + 1} due to errors or empty files."
-        )
+         merged_df = pd.concat(group_dfs, ignore_index=True)
+         merged_dataframes[f"Group_{i + 1}"] = merged_df
 
 columns_to_drop_group1 = [
     "Chứng từ nhập_PXH",
@@ -311,9 +306,9 @@ columns_to_drop_group2 = [
     "Thời hạn bảo hành_Gia hạn",
 ]
 rename_mapping = {
-    "Chứng từ nhập_PNK": "Chứng từ",
+    "Chứng từ nhập_PNK": "Mã chứng từ",
     "Chứng từ nhập_Ngày": "Ngày",
-    "Nhà CC": "Nhà cung cấp",
+    "Nhà CC": "Tên nhà cung cấp",
     "Mã HH": "Mã hàng",
     "Chủng loại": "Tên hàng",
     "Số lượng_Kho 1": "Số lượng",
@@ -322,59 +317,30 @@ rename_mapping = {
 }
 
 if "Group_1" in merged_dataframes:
-    initial_rows_g1 = len(merged_dataframes["Group_1"])
-    merged_dataframes["Group_1"] = merged_dataframes["Group_1"].dropna(
-        subset=["Số lượng_Kho 1"]
-    )
-    print("\n--- Group 1 DataFrame after dropping rows with empty 'Số lượng_Kho 1' ---")
-    print(f"Dropped {initial_rows_g1 - len(merged_dataframes['Group_1'])} rows.")
-
-    initial_cols_g1 = merged_dataframes["Group_1"].shape[1]
-    merged_dataframes["Group_1"] = merged_dataframes["Group_1"].drop(
-        columns=columns_to_drop_group1, errors="ignore"
-    )
-    print(
-        f"\n--- Group 1 DataFrame after dropping columns ({initial_cols_g1 - merged_dataframes['Group_1'].shape[1]} columns dropped) ---"
-    )
-
-    merged_dataframes["Group_1"] = merged_dataframes["Group_1"].rename(
-        columns=rename_mapping
-    )
-    print("\n--- Group 1 DataFrame after renaming columns ---")
-    print(merged_dataframes["Group_1"].info(memory_usage="deep"))
-else:
-    print("Group_1 DataFrame not found for post-processing.")
+     merged_dataframes["Group_1"] = merged_dataframes["Group_1"].dropna(
+         subset=["Số lượng_Kho 1"]
+     )
+     merged_dataframes["Group_1"] = merged_dataframes["Group_1"].drop(
+         columns=columns_to_drop_group1, errors="ignore"
+     )
+     merged_dataframes["Group_1"] = merged_dataframes["Group_1"].rename(
+         columns=rename_mapping
+     )
 
 if "Group_2" in merged_dataframes:
-    initial_rows_g2 = len(merged_dataframes["Group_2"])
-    merged_dataframes["Group_2"] = merged_dataframes["Group_2"].dropna(
-        subset=["Số lượng_Kho 1"]
-    )
-    print("\n--- Group 2 DataFrame after dropping rows with empty 'Số lượng_Kho 1' ---")
-    print(f"Dropped {initial_rows_g2 - len(merged_dataframes['Group_2'])} rows.")
+     merged_dataframes["Group_2"] = merged_dataframes["Group_2"].dropna(
+         subset=["Số lượng_Kho 1"]
+     )
+     merged_dataframes["Group_2"] = merged_dataframes["Group_2"].drop(
+         columns=columns_to_drop_group2, errors="ignore"
+     )
+     merged_dataframes["Group_2"] = merged_dataframes["Group_2"].rename(
+         columns=rename_mapping
+     )
 
-    initial_cols_g2 = merged_dataframes["Group_2"].shape[1]
-    merged_dataframes["Group_2"] = merged_dataframes["Group_2"].drop(
-        columns=columns_to_drop_group2, errors="ignore"
-    )
-    print(
-        f"\n--- Group 2 DataFrame after dropping columns ({initial_cols_g2 - merged_dataframes['Group_2'].shape[1]} columns dropped) ---"
-    )
-
-    merged_dataframes["Group_2"] = merged_dataframes["Group_2"].rename(
-        columns=rename_mapping
-    )
-    print("\n--- Group 2 DataFrame after renaming columns ---")
-    print(merged_dataframes["Group_2"].info(memory_usage="deep"))
-else:
-    print("Group_2 DataFrame not found for post-processing.")
-
-final_combined_df = pd.concat(
-    [df for df in merged_dataframes.values()], ignore_index=True
-)
-print("\n--- Final Combined DataFrame after initial processing ---")
-print(final_combined_df.head())
-print(final_combined_df.info(memory_usage="deep"))
+ final_combined_df = pd.concat(
+     [df for df in merged_dataframes.values()], ignore_index=True
+ )
 
 # --- 2. Comprehensive Date Cleaning for 'Ngày' Column ---
 # Create date_analysis_df to separate float and string dates
@@ -383,21 +349,17 @@ date_analysis_df = final_combined_df[
 ].copy()
 
 float_mask = date_analysis_df["Ngày"].apply(is_float_check)
-float_dates_df = date_analysis_df[float_mask].copy()
-string_dates_df = date_analysis_df[~float_mask].copy()
+ float_dates_df = date_analysis_df[float_mask].copy()
+ string_dates_df = date_analysis_df[~float_mask].copy()
 
-print("\nSeparated 'Ngày' column into float_dates_df and string_dates_df.")
+ # Apply robust parsing function to string_dates_df
+ string_dates_df["Parsed Ngày"] = string_dates_df.apply(parse_date_robustly, axis=1)
 
-# Apply robust parsing function to string_dates_df
-string_dates_df["Parsed Ngày"] = string_dates_df.apply(parse_date_robustly, axis=1)
-print("Applied robust parsing to string_dates_df.")
-
-# Convert Excel Serial Dates in float_dates_df
-float_dates_df["Ngày"] = pd.to_numeric(float_dates_df["Ngày"], errors="coerce")
-float_dates_df["Parsed Ngày"] = pd.to_datetime(
-    float_dates_df["Ngày"], unit="D", origin="1899-12-30", errors="coerce"
-)
-print("Converted Excel serial dates in float_dates_df.")
+ # Convert Excel Serial Dates in float_dates_df
+ float_dates_df["Ngày"] = pd.to_numeric(float_dates_df["Ngày"], errors="coerce")
+ float_dates_df["Parsed Ngày"] = pd.to_datetime(
+     float_dates_df["Ngày"], unit="D", origin="1899-12-30", errors="coerce"
+ )
 
 # Initialize a new Series for the final 'Ngày' column in final_combined_df
 final_combined_df_processed_dates = pd.Series(
@@ -411,11 +373,10 @@ final_combined_df_processed_dates.update(string_dates_df["Parsed Ngày"])
 final_combined_df_processed_dates.update(float_dates_df["Parsed Ngày"])
 
 # Assign this processed Series back to final_combined_df['Ngày']
-final_combined_df["Ngày"] = final_combined_df_processed_dates
+ final_combined_df["Ngày"] = final_combined_df_processed_dates
 
-# Final type coercion to ensure consistency
-final_combined_df["Ngày"] = pd.to_datetime(final_combined_df["Ngày"], errors="coerce")
-print("Integrated all parsed dates back into final_combined_df['Ngày'].")
+ # Final type coercion to ensure consistency
+ final_combined_df["Ngày"] = pd.to_datetime(final_combined_df["Ngày"], errors="coerce")
 
 # --- 3. Handle Conflicting Entries with Backward Fill ---
 # Re-identify mismatches in the current state of final_combined_df for bfill consideration
@@ -507,10 +468,9 @@ final_combined_df = final_combined_df.drop(
 )
 
 # --- 5. Format 'Ngày' as ISO date string (YYYY-MM-DD) ---
-final_combined_df["Ngày"] = (
-    final_combined_df["Ngày"].dt.strftime("%Y-%m-%d").fillna("")
-)
-print("Formatted 'Ngày' column to 'YYYY-MM-DD' string format.")
+ final_combined_df["Ngày"] = (
+     final_combined_df["Ngày"].dt.strftime("%Y-%m-%d").fillna("")
+ )
 
 # --- Save to CSV ---
 output_dir = os.path.join(os.getcwd(), "data", "final")
@@ -521,6 +481,21 @@ if not os.path.exists(output_dir):
 final_combined_df = final_combined_df.rename(
     columns={"_source_file_month": "Tháng", "_source_file_year": "Năm"}
 )
+
+# --- 6a. Reorder columns: common columns first, then different ones ---
+column_order = [
+    "Mã hàng",
+    "Tên hàng",
+    "Số lượng",
+    "Đơn giá",
+    "Thành tiền",
+    "Ngày",
+    "Tháng",
+    "Năm",
+    "Mã chứng từ",
+    "Tên nhà cung cấp",  # Different column
+]
+final_combined_df = final_combined_df[[col for col in column_order if col in final_combined_df.columns]]
 
 # Create a temporary datetime column for the source file date
 # using 'Năm' and 'Tháng' after renaming

@@ -360,11 +360,7 @@ final_combined_df_refactored = pd.concat(
 
 # --- 5. Initial Verification of the Combined DataFrame ---
 
-print("Shape of the initial combined DataFrame:", final_combined_df_refactored.shape)
-print("\nHead of the initial combined DataFrame:")
-display(final_combined_df_refactored.head())
-print("\nInfo of the initial combined DataFrame:")
-final_combined_df_refactored.info(verbose=True)
+print("Initial DataFrame shape:", final_combined_df_refactored.shape)
 
 # --- 6. Date Consistency Check ---
 
@@ -396,19 +392,10 @@ month_mismatch = final_combined_df_refactored[
     & final_combined_df_refactored["month_from_filename"].notna()
 ]
 
-print(
-    f"\nNumber of rows where 'Ngày_Year' does not match 'year_from_filename': {len(year_mismatch)}"
-)
 if not year_mismatch.empty:
-    print("Sample of year mismatches:")
-    display(year_mismatch[["Ngày", "Ngày_Year", "year_from_filename"]].head())
-
-print(
-    f"\nNumber of rows where 'Ngày_Month' does not match 'month_from_filename': {len(month_mismatch)}"
-)
-if not month_mismatch.empty:
-    print("Sample of month mismatches:")
-    display(month_mismatch[["Ngày", "Ngày_Month", "month_from_filename"]].head())
+     print(f"Warning: {len(year_mismatch)} rows with year mismatches")
+ if not month_mismatch.empty:
+     print(f"Warning: {len(month_mismatch)} rows with month mismatches")
 
 if year_mismatch.empty and month_mismatch.empty:
     print(
@@ -417,16 +404,14 @@ if year_mismatch.empty and month_mismatch.empty:
 
 # --- 7. Non-Null Value Analysis ---
 
-# Calculate percentage of non-null values for all columns
-non_null_percentage = (
-    final_combined_df_refactored.count() / len(final_combined_df_refactored)
-) * 100
-
-print("\nPercentage of non-null values for each column:")
-display(non_null_percentage.sort_values(ascending=False))
-
-print("\nColumns having less than 90% non-null values:")
-display(non_null_percentage[non_null_percentage < 90].index.tolist())
+ # Calculate percentage of non-null values for all columns
+ non_null_percentage = (
+     final_combined_df_refactored.count() / len(final_combined_df_refactored)
+ ) * 100
+ 
+ sparse_cols = non_null_percentage[non_null_percentage < 90].index.tolist()
+ if sparse_cols:
+     print(f"Warning: {len(sparse_cols)} columns have less than 90% non-null values")
 
 # --- 8. Final Column Cleanup and Renaming ---
 
@@ -473,7 +458,7 @@ rename_mapping = {
     "Khách hàng": "Tên khách hàng",
     "Mã Số": "Mã hàng",
     "Tên": "Tên hàng",
-    "Giá bán": "Giá bán",
+    "Giá bán": "Đơn giá",
     "Thành tiền": "Thành tiền",
     "Số lượng": "Số lượng",
     "year_from_filename": "Năm",  # Renaming year_from_filename to Năm
@@ -488,13 +473,22 @@ filtered_rename_mapping = {
 }
 
 # Apply the renaming
-final_combined_df_refactored.rename(columns=filtered_rename_mapping, inplace=True)
+ final_combined_df_refactored.rename(columns=filtered_rename_mapping, inplace=True)
 
-print("\n--- Final Cleaned and Renamed DataFrame --- ")
-print("New DataFrame info:")
-final_combined_df_refactored.info(verbose=True)
-print("\nHead of the final cleaned and renamed DataFrame:")
-display(final_combined_df_refactored.head())
+# --- 8a. Reorder columns: common columns first, then different ones ---
+column_order = [
+    "Mã hàng",
+    "Tên hàng",
+    "Số lượng",
+    "Đơn giá",
+    "Thành tiền",
+    "Ngày",
+    "Tháng",
+    "Năm",
+    "Mã chứng từ",
+    "Tên khách hàng",  # Different column
+]
+final_combined_df_refactored = final_combined_df_refactored[[col for col in column_order if col in final_combined_df_refactored.columns]]
 
 # --- 9. Save Final DataFrame to CSV ---
 
@@ -538,6 +532,11 @@ output_dir = os.path.join(os.getcwd(), "data", "final")
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
+# Drop the temporary 'year_month_dt' column before saving
+final_combined_df_refactored.drop(
+    columns=["year_month_dt"], inplace=True, errors="ignore"
+)
+
 # Construct the full output path
 output_filepath = os.path.join(output_dir, output_filename)
 
@@ -545,8 +544,3 @@ output_filepath = os.path.join(output_dir, output_filename)
 final_combined_df_refactored.to_csv(output_filepath, index=False, encoding="utf-8")
 
 print(f"\nFinal processed DataFrame saved to: {output_filepath}")
-
-# Drop the temporary 'year_month_dt' column to clean up the DataFrame
-final_combined_df_refactored.drop(
-    columns=["year_month_dt"], inplace=True, errors="ignore"
-)
