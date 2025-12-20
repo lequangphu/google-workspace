@@ -523,6 +523,11 @@ output_filepath = os.path.join(output_dir, output_filename)
 # Drop the temporary column before saving
 final_combined_df = final_combined_df.drop(columns=["temp_source_file_date"])
 
+# --- Sort by Ngày and Mã hàng ---
+final_combined_df["Ngày_dt"] = pd.to_datetime(final_combined_df["Ngày"], errors="coerce")
+final_combined_df = final_combined_df.sort_values(by=["Ngày_dt", "Mã hàng"], na_position="last")
+final_combined_df = final_combined_df.drop(columns=["Ngày_dt"])
+
 final_combined_df.to_csv(output_filepath, index=False, encoding="utf-8")
 print(f"\nFinal combined DataFrame saved to: {output_filepath}")
 

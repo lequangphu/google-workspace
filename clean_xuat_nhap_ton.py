@@ -231,10 +231,38 @@ column_rename_map = {
 }
 final_df = final_df.rename(columns=column_rename_map)
 
+# Add "Biên lãi gộp" column = "Lãi gộp cuối kỳ" / "Doanh thu cuối kỳ"
+if 'Lãi gộp cuối kỳ' in final_df.columns and 'Doanh thu cuối kỳ' in final_df.columns:
+    final_df['Biên lãi gộp'] = final_df.apply(
+        lambda row: row['Lãi gộp cuối kỳ'] / row['Doanh thu cuối kỳ'] 
+                    if pd.notna(row['Doanh thu cuối kỳ']) and row['Doanh thu cuối kỳ'] != 0 
+                    else pd.NA,
+        axis=1
+    )
+
 # Drop 'Xuất trong kỳ' column
 if 'Xuất trong kỳ' in final_df.columns:
     final_df = final_df.drop(columns=['Xuất trong kỳ'])
 
+# --- Drop rows where all "Số lượng*" columns are empty or zero ---
+so_luong_cols = [col for col in final_df.columns if col.startswith('Số lượng')]
+if so_luong_cols:
+    # Convert to numeric, handling NaN and invalid values
+    for col in so_luong_cols:
+        final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
+    
+    # Create mask for rows where all Số lượng columns are NaN or 0
+    mask_empty_rows = final_df[so_luong_cols].isna().all(axis=1) | (final_df[so_luong_cols] == 0).all(axis=1)
+    rows_dropped = mask_empty_rows.sum()
+    final_df = final_df[~mask_empty_rows]
+    if rows_dropped > 0:
+        print(f"Dropped {rows_dropped} rows with no inventory (all Số lượng columns empty or zero)")
+
+# --- Sort by Ngày and Mã hàng ---
+if 'Ngày' in final_df.columns and 'Mã hàng' in final_df.columns:
+    final_df['Ngày_dt'] = pd.to_datetime(final_df['Ngày'], errors='coerce')
+    final_df = final_df.sort_values(by=['Ngày_dt', 'Mã hàng'], na_position='last')
+    final_df = final_df.drop(columns=['Ngày_dt'])
 
 # 9. Determine the period for the output filename and save the final DataFrame
 if not final_df.empty and 'Ngày' in final_df.columns:

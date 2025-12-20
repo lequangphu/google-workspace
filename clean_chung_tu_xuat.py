@@ -537,6 +537,12 @@ final_combined_df_refactored.drop(
     columns=["year_month_dt"], inplace=True, errors="ignore"
 )
 
+# --- Sort by Ngày and Mã hàng ---
+if "Ngày" in final_combined_df_refactored.columns and "Mã hàng" in final_combined_df_refactored.columns:
+    final_combined_df_refactored["Ngày_dt"] = pd.to_datetime(final_combined_df_refactored["Ngày"], errors="coerce")
+    final_combined_df_refactored = final_combined_df_refactored.sort_values(by=["Ngày_dt", "Mã hàng"], na_position="last")
+    final_combined_df_refactored = final_combined_df_refactored.drop(columns=["Ngày_dt"])
+
 # Construct the full output path
 output_filepath = os.path.join(output_dir, output_filename)
 
