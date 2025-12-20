@@ -226,7 +226,7 @@ for file_path, (headers, indices) in file_headers_map.items():
 
 merged_dataframes = {}
 for i, (headers_tuple, files_and_indices_list) in enumerate(grouped_files.items()):
-     common_headers = list(headers_tuple)
+    common_headers = list(headers_tuple)
 
     group_dfs = []
     for file_path, original_indices in files_and_indices_list:
@@ -317,28 +317,28 @@ rename_mapping = {
 }
 
 if "Group_1" in merged_dataframes:
-     merged_dataframes["Group_1"] = merged_dataframes["Group_1"].dropna(
-         subset=["Số lượng_Kho 1"]
-     )
-     merged_dataframes["Group_1"] = merged_dataframes["Group_1"].drop(
-         columns=columns_to_drop_group1, errors="ignore"
-     )
-     merged_dataframes["Group_1"] = merged_dataframes["Group_1"].rename(
-         columns=rename_mapping
-     )
+    merged_dataframes["Group_1"] = merged_dataframes["Group_1"].dropna(
+        subset=["Số lượng_Kho 1"]
+    )
+    merged_dataframes["Group_1"] = merged_dataframes["Group_1"].drop(
+        columns=columns_to_drop_group1, errors="ignore"
+    )
+    merged_dataframes["Group_1"] = merged_dataframes["Group_1"].rename(
+        columns=rename_mapping
+    )
 
 if "Group_2" in merged_dataframes:
-     merged_dataframes["Group_2"] = merged_dataframes["Group_2"].dropna(
-         subset=["Số lượng_Kho 1"]
-     )
-     merged_dataframes["Group_2"] = merged_dataframes["Group_2"].drop(
-         columns=columns_to_drop_group2, errors="ignore"
-     )
-     merged_dataframes["Group_2"] = merged_dataframes["Group_2"].rename(
-         columns=rename_mapping
-     )
+    merged_dataframes["Group_2"] = merged_dataframes["Group_2"].dropna(
+        subset=["Số lượng_Kho 1"]
+    )
+    merged_dataframes["Group_2"] = merged_dataframes["Group_2"].drop(
+        columns=columns_to_drop_group2, errors="ignore"
+    )
+    merged_dataframes["Group_2"] = merged_dataframes["Group_2"].rename(
+        columns=rename_mapping
+    )
 
- final_combined_df = pd.concat(
+final_combined_df = pd.concat(
      [df for df in merged_dataframes.values()], ignore_index=True
  )
 
@@ -349,17 +349,17 @@ date_analysis_df = final_combined_df[
 ].copy()
 
 float_mask = date_analysis_df["Ngày"].apply(is_float_check)
- float_dates_df = date_analysis_df[float_mask].copy()
- string_dates_df = date_analysis_df[~float_mask].copy()
+float_dates_df = date_analysis_df[float_mask].copy()
+string_dates_df = date_analysis_df[~float_mask].copy()
 
- # Apply robust parsing function to string_dates_df
- string_dates_df["Parsed Ngày"] = string_dates_df.apply(parse_date_robustly, axis=1)
+# Apply robust parsing function to string_dates_df
+string_dates_df["Parsed Ngày"] = string_dates_df.apply(parse_date_robustly, axis=1)
 
- # Convert Excel Serial Dates in float_dates_df
- float_dates_df["Ngày"] = pd.to_numeric(float_dates_df["Ngày"], errors="coerce")
- float_dates_df["Parsed Ngày"] = pd.to_datetime(
-     float_dates_df["Ngày"], unit="D", origin="1899-12-30", errors="coerce"
- )
+# Convert Excel Serial Dates in float_dates_df
+float_dates_df["Ngày"] = pd.to_numeric(float_dates_df["Ngày"], errors="coerce")
+float_dates_df["Parsed Ngày"] = pd.to_datetime(
+    float_dates_df["Ngày"], unit="D", origin="1899-12-30", errors="coerce"
+)
 
 # Initialize a new Series for the final 'Ngày' column in final_combined_df
 final_combined_df_processed_dates = pd.Series(
@@ -373,10 +373,10 @@ final_combined_df_processed_dates.update(string_dates_df["Parsed Ngày"])
 final_combined_df_processed_dates.update(float_dates_df["Parsed Ngày"])
 
 # Assign this processed Series back to final_combined_df['Ngày']
- final_combined_df["Ngày"] = final_combined_df_processed_dates
+final_combined_df["Ngày"] = final_combined_df_processed_dates
 
- # Final type coercion to ensure consistency
- final_combined_df["Ngày"] = pd.to_datetime(final_combined_df["Ngày"], errors="coerce")
+# Final type coercion to ensure consistency
+final_combined_df["Ngày"] = pd.to_datetime(final_combined_df["Ngày"], errors="coerce")
 
 # --- 3. Handle Conflicting Entries with Backward Fill ---
 # Re-identify mismatches in the current state of final_combined_df for bfill consideration
@@ -468,9 +468,9 @@ final_combined_df = final_combined_df.drop(
 )
 
 # --- 5. Format 'Ngày' as ISO date string (YYYY-MM-DD) ---
- final_combined_df["Ngày"] = (
-     final_combined_df["Ngày"].dt.strftime("%Y-%m-%d").fillna("")
- )
+final_combined_df["Ngày"] = (
+    final_combined_df["Ngày"].dt.strftime("%Y-%m-%d").fillna("")
+)
 
 # --- Save to CSV ---
 output_dir = os.path.join(os.getcwd(), "data", "final")

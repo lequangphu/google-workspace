@@ -393,9 +393,9 @@ month_mismatch = final_combined_df_refactored[
 ]
 
 if not year_mismatch.empty:
-     print(f"Warning: {len(year_mismatch)} rows with year mismatches")
- if not month_mismatch.empty:
-     print(f"Warning: {len(month_mismatch)} rows with month mismatches")
+    print(f"Warning: {len(year_mismatch)} rows with year mismatches")
+if not month_mismatch.empty:
+    print(f"Warning: {len(month_mismatch)} rows with month mismatches")
 
 if year_mismatch.empty and month_mismatch.empty:
     print(
@@ -404,14 +404,14 @@ if year_mismatch.empty and month_mismatch.empty:
 
 # --- 7. Non-Null Value Analysis ---
 
- # Calculate percentage of non-null values for all columns
- non_null_percentage = (
-     final_combined_df_refactored.count() / len(final_combined_df_refactored)
- ) * 100
- 
- sparse_cols = non_null_percentage[non_null_percentage < 90].index.tolist()
- if sparse_cols:
-     print(f"Warning: {len(sparse_cols)} columns have less than 90% non-null values")
+# Calculate percentage of non-null values for all columns
+non_null_percentage = (
+    final_combined_df_refactored.count() / len(final_combined_df_refactored)
+) * 100
+
+sparse_cols = non_null_percentage[non_null_percentage < 90].index.tolist()
+if sparse_cols:
+    print(f"Warning: {len(sparse_cols)} columns have less than 90% non-null values")
 
 # --- 8. Final Column Cleanup and Renaming ---
 
@@ -473,7 +473,7 @@ filtered_rename_mapping = {
 }
 
 # Apply the renaming
- final_combined_df_refactored.rename(columns=filtered_rename_mapping, inplace=True)
+final_combined_df_refactored.rename(columns=filtered_rename_mapping, inplace=True)
 
 # --- 8a. Reorder columns: common columns first, then different ones ---
 column_order = [
