@@ -155,6 +155,9 @@ def ingest_from_drive(test_mode=False, clean_up=False):
                 tabs = get_sheet_tabs(sheets_service, file_id)
                 for tab in set(tabs) & set(desired_tabs):
                     csv_path = f"data/raw/{year_num}_{month}_{tab}.csv"
+                    if os.path.exists(csv_path):
+                        print(f"⊘ Skipped {csv_path} (already exists)")
+                        continue
                     export_tab_to_csv(sheets_service, file_id, tab, csv_path)
                     print(f"✓ Exported {csv_path}")
                     tabs_processed.add(tab)
