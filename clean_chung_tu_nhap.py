@@ -523,6 +523,27 @@ output_filepath = os.path.join(output_dir, output_filename)
 # Drop the temporary column before saving
 final_combined_df = final_combined_df.drop(columns=["temp_source_file_date"])
 
+# --- Format columns before saving ---
+# Ensure text columns are strings, numeric columns are numeric
+if "Mã hàng" in final_combined_df.columns:
+    final_combined_df["Mã hàng"] = final_combined_df["Mã hàng"].astype(str)
+if "Mã chứng từ" in final_combined_df.columns:
+    final_combined_df["Mã chứng từ"] = final_combined_df["Mã chứng từ"].astype(str)
+if "Tên nhà cung cấp" in final_combined_df.columns:
+    final_combined_df["Tên nhà cung cấp"] = final_combined_df["Tên nhà cung cấp"].astype(str)
+if "Tên hàng" in final_combined_df.columns:
+    final_combined_df["Tên hàng"] = final_combined_df["Tên hàng"].astype(str)
+
+# Numeric columns
+for col in ["Số lượng", "Đơn giá", "Thành tiền"]:
+    if col in final_combined_df.columns:
+        final_combined_df[col] = pd.to_numeric(final_combined_df[col], errors="coerce")
+
+# Integer columns
+for col in ["Tháng", "Năm"]:
+    if col in final_combined_df.columns:
+        final_combined_df[col] = pd.to_numeric(final_combined_df[col], errors="coerce").astype("Int64")
+
 # --- Sort by Ngày and Mã chứng từ ---
 final_combined_df["Ngày_dt"] = pd.to_datetime(final_combined_df["Ngày"], errors="coerce")
 final_combined_df = final_combined_df.sort_values(by=["Ngày_dt", "Mã chứng từ"], na_position="last")

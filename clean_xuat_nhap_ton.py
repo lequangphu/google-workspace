@@ -258,6 +258,30 @@ if so_luong_cols:
     if rows_dropped > 0:
         print(f"Dropped {rows_dropped} rows with no inventory (all Số lượng columns empty or zero)")
 
+# --- Format columns before saving ---
+# Ensure text columns are strings, numeric columns are numeric
+if "Mã hàng" in final_df.columns:
+    final_df["Mã hàng"] = final_df["Mã hàng"].astype(str)
+if "Tên hàng" in final_df.columns:
+    final_df["Tên hàng"] = final_df["Tên hàng"].astype(str)
+
+# Numeric columns (quantities and prices)
+numeric_cols = [
+    "Số lượng đầu kỳ", "Đơn giá đầu kỳ", "Thành tiền đầu kỳ",
+    "Số lượng nhập trong kỳ", "Đơn giá nhập trong kỳ", "Thành tiền nhập trong kỳ",
+    "Số lượng xuất trong kỳ", "Đơn giá xuất trong kỳ", "Thành tiền xuất trong kỳ",
+    "Số lượng cuối kỳ", "Đơn giá cuối kỳ", "Thành tiền cuối kỳ",
+    "Doanh thu cuối kỳ", "Lãi gộp cuối kỳ", "Biên lãi gộp"
+]
+for col in numeric_cols:
+    if col in final_df.columns:
+        final_df[col] = pd.to_numeric(final_df[col], errors="coerce")
+
+# Integer columns
+for col in ["Tháng", "Năm"]:
+    if col in final_df.columns:
+        final_df[col] = pd.to_numeric(final_df[col], errors="coerce").astype("Int64")
+
 # --- Sort by Ngày and Mã hàng ---
 if 'Ngày' in final_df.columns and 'Mã hàng' in final_df.columns:
     final_df['Ngày_dt'] = pd.to_datetime(final_df['Ngày'], errors='coerce')

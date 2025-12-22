@@ -537,6 +537,27 @@ final_combined_df_refactored.drop(
     columns=["year_month_dt"], inplace=True, errors="ignore"
 )
 
+# --- Format columns before saving ---
+# Ensure text columns are strings, numeric columns are numeric
+if "Mã hàng" in final_combined_df_refactored.columns:
+    final_combined_df_refactored["Mã hàng"] = final_combined_df_refactored["Mã hàng"].astype(str)
+if "Mã chứng từ" in final_combined_df_refactored.columns:
+    final_combined_df_refactored["Mã chứng từ"] = final_combined_df_refactored["Mã chứng từ"].astype(str)
+if "Tên khách hàng" in final_combined_df_refactored.columns:
+    final_combined_df_refactored["Tên khách hàng"] = final_combined_df_refactored["Tên khách hàng"].astype(str)
+if "Tên hàng" in final_combined_df_refactored.columns:
+    final_combined_df_refactored["Tên hàng"] = final_combined_df_refactored["Tên hàng"].astype(str)
+
+# Numeric columns
+for col in ["Số lượng", "Đơn giá", "Thành tiền"]:
+    if col in final_combined_df_refactored.columns:
+        final_combined_df_refactored[col] = pd.to_numeric(final_combined_df_refactored[col], errors="coerce")
+
+# Integer columns
+for col in ["Tháng", "Năm"]:
+    if col in final_combined_df_refactored.columns:
+        final_combined_df_refactored[col] = pd.to_numeric(final_combined_df_refactored[col], errors="coerce").astype("Int64")
+
 # --- Sort by Ngày and Mã chứng từ ---
 if "Ngày" in final_combined_df_refactored.columns and "Mã chứng từ" in final_combined_df_refactored.columns:
     final_combined_df_refactored["Ngày_dt"] = pd.to_datetime(final_combined_df_refactored["Ngày"], errors="coerce")
