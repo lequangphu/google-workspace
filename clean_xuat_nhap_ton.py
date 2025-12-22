@@ -261,7 +261,7 @@ if so_luong_cols:
 # --- Format columns before saving ---
 # Ensure text columns are strings, numeric columns are numeric
 if "Mã hàng" in final_df.columns:
-    final_df["Mã hàng"] = final_df["Mã hàng"].astype(str)
+    final_df["Mã hàng"] = final_df["Mã hàng"].astype(str).str.upper()
 if "Tên hàng" in final_df.columns:
     final_df["Tên hàng"] = final_df["Tên hàng"].astype(str)
 

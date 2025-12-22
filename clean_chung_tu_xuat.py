@@ -540,7 +540,7 @@ final_combined_df_refactored.drop(
 # --- Format columns before saving ---
 # Ensure text columns are strings, numeric columns are numeric
 if "Mã hàng" in final_combined_df_refactored.columns:
-    final_combined_df_refactored["Mã hàng"] = final_combined_df_refactored["Mã hàng"].astype(str)
+    final_combined_df_refactored["Mã hàng"] = final_combined_df_refactored["Mã hàng"].astype(str).str.upper()
 if "Mã chứng từ" in final_combined_df_refactored.columns:
     final_combined_df_refactored["Mã chứng từ"] = final_combined_df_refactored["Mã chứng từ"].astype(str)
 if "Tên khách hàng" in final_combined_df_refactored.columns:

@@ -526,7 +526,7 @@ final_combined_df = final_combined_df.drop(columns=["temp_source_file_date"])
 # --- Format columns before saving ---
 # Ensure text columns are strings, numeric columns are numeric
 if "Mã hàng" in final_combined_df.columns:
-    final_combined_df["Mã hàng"] = final_combined_df["Mã hàng"].astype(str)
+    final_combined_df["Mã hàng"] = final_combined_df["Mã hàng"].astype(str).str.upper()
 if "Mã chứng từ" in final_combined_df.columns:
     final_combined_df["Mã chứng từ"] = final_combined_df["Mã chứng từ"].astype(str)
 if "Tên nhà cung cấp" in final_combined_df.columns:
