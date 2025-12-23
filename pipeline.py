@@ -228,6 +228,15 @@ def step_clean() -> bool:
     logger.info("STEP 2: CLEAN")
     logger.info("=" * 70)
     
+    # Clear final directory before running cleaners
+    if DATA_FINAL_DIR.exists():
+        final_files = list(DATA_FINAL_DIR.glob("*.csv"))
+        if final_files:
+            logger.info(f"Clearing {len(final_files)} files from /data/final/")
+            for filepath in final_files:
+                filepath.unlink()
+                logger.debug(f"Deleted {filepath.name}")
+    
     clean_scripts = [
         ("CT.NHAP", SCRIPT_CLEAN_NHAP),
         ("CT.XUAT", SCRIPT_CLEAN_XUAT),
