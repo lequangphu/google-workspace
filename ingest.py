@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime, timezone
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -72,7 +73,7 @@ def find_sheets_in_folder(drive_service, folder_id):
      """Find all Google Sheets in a folder."""
      query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.spreadsheet'"
      try:
-         results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+         results = drive_service.files().list(q=query, fields="files(id, name, modifiedTime)").execute()
          sheets = results.get("files", [])
          return sheets
      except HttpError as e:
@@ -132,17 +133,50 @@ def export_tab_to_csv(sheets_service, spreadsheet_id, sheet_name, csv_path):
 
 
 def parse_file_metadata(file_name):
-    """
-    Extract year and month from filename.
+     """
+     Extract year and month from filename.
+ 
+     Example: "XUẤT NHẬP TỒN TỔNG T01.23" -> year=2023, month=1
+     """
+     match = re.search(r"T(\d+)\.(\d+)$", file_name)
+     if match:
+         month = int(match.group(1))
+         year = 2000 + int(match.group(2))
+         return year, month
+     return None, None
 
-    Example: "XUẤT NHẬP TỒN TỔNG T01.23" -> year=2023, month=1
-    """
-    match = re.search(r"T(\d+)\.(\d+)$", file_name)
-    if match:
-        month = int(match.group(1))
-        year = 2000 + int(match.group(2))
-        return year, month
-    return None, None
+
+def should_ingest_file(csv_path, remote_modified_time):
+     """
+     Check if remote file is newer than local CSV.
+ 
+     Args:
+         csv_path: Path to local CSV file
+         remote_modified_time: ISO 8601 timestamp from Google Drive (e.g., "2025-12-23T10:30:00.000Z")
+ 
+     Returns:
+         True if file doesn't exist or remote is newer, False otherwise
+     """
+     if not os.path.exists(csv_path):
+         return True  # File doesn't exist, ingest it
+ 
+     try:
+         # Get local CSV modification time (UTC)
+         local_mtime = os.path.getmtime(csv_path)
+         local_dt = datetime.fromtimestamp(local_mtime, tz=timezone.utc)
+ 
+         # Parse Google Drive's ISO 8601 timestamp
+         remote_dt = datetime.fromisoformat(remote_modified_time.replace('Z', '+00:00'))
+ 
+         # Ingest if remote is newer
+         should_ingest = remote_dt > local_dt
+         if not should_ingest:
+             logging.debug(f"Skipped {csv_path} (local is up-to-date)")
+         return should_ingest
+ 
+     except Exception as e:
+         logging.warning(f"Could not compare timestamps for {csv_path}: {e}")
+         return False  # Play it safe, don't re-ingest on error
 
 
 def ingest_from_drive(test_mode=False, clean_up=False):
@@ -196,27 +230,29 @@ def ingest_from_drive(test_mode=False, clean_up=False):
          for sheet in sheets:
              file_name = sheet["name"]
              file_id = sheet["id"]
+             remote_modified_time = sheet.get("modifiedTime")
              year_num, month = parse_file_metadata(file_name)
              if year_num is None or month is None:
                  logging.debug(f"Skipping {file_name}: invalid metadata")
                  continue
- 
+         
              tabs = get_sheet_tabs(sheets_service, file_id)
              if not tabs:
                  logging.warning(f"No tabs found in {file_name}")
                  continue
- 
+         
              for tab in set(tabs) & set(DESIRED_TABS):
                  csv_path = f"{RAW_DATA_DIR}/{year_num}_{month}_{tab}.csv"
-                 if os.path.exists(csv_path):
-                     logging.debug(f"Skipped {csv_path} (already exists)")
+                 
+                 # Check if file needs to be ingested based on timestamp
+                 if not should_ingest_file(csv_path, remote_modified_time):
                      continue
                  
                  if export_tab_to_csv(sheets_service, file_id, tab, csv_path):
                      logging.info(f"Exported {csv_path}")
                      tabs_processed.add(tab)
                      files_ingested += 1
- 
+         
                      if test_mode and len(tabs_processed) >= len(DESIRED_TABS):
                          logging.info(f"Test mode: downloaded one of each tab type {sorted(tabs_processed)}")
                          return True
