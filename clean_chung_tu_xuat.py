@@ -412,6 +412,49 @@ def process_groups(grouped_files: Dict) -> pd.DataFrame:
     )
 
 
+def fill_and_adjust_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill nulls and adjust quantities based on data patterns.
+    
+    On rows with non-null 'Số lượng':
+    - Fill null 'Đơn giá' and 'Thành tiền' with 0
+    - Fill null 'Tên khách hàng' with 'KHÁCH LẺ'
+    
+    On rows with positive 'Số lượng' and negative 'Đơn giá':
+    - Make 'Số lượng' negative and 'Đơn giá' positive
+    """
+    # Ensure numeric columns are properly typed
+    if "Số lượng" in df.columns:
+        df["Số lượng"] = pd.to_numeric(df["Số lượng"], errors="coerce")
+    if "Đơn giá" in df.columns:
+        df["Đơn giá"] = pd.to_numeric(df["Đơn giá"], errors="coerce")
+    if "Thành tiền" in df.columns:
+        df["Thành tiền"] = pd.to_numeric(df["Thành tiền"], errors="coerce")
+    
+    # Rows with non-null Số lượng
+    non_null_qty = df["Số lượng"].notna()
+    
+    # Fill null Đơn giá and Thành tiền with 0
+    if "Đơn giá" in df.columns:
+        df.loc[non_null_qty & df["Đơn giá"].isna(), "Đơn giá"] = 0
+    if "Thành tiền" in df.columns:
+        df.loc[non_null_qty & df["Thành tiền"].isna(), "Thành tiền"] = 0
+    
+    # Fill null Tên khách hàng with 'KHÁCH LẺ'
+    if "Tên khách hàng" in df.columns:
+        df.loc[non_null_qty & df["Tên khách hàng"].isna(), "Tên khách hàng"] = "KHÁCH LẺ"
+    
+    # For rows with positive Số lượng and negative Đơn giá
+    if "Số lượng" in df.columns and "Đơn giá" in df.columns:
+        pos_qty_neg_price = (
+            (df["Số lượng"] > 0) & 
+            (df["Đơn giá"] < 0)
+        )
+        df.loc[pos_qty_neg_price, "Số lượng"] = -df.loc[pos_qty_neg_price, "Số lượng"]
+        df.loc[pos_qty_neg_price, "Đơn giá"] = -df.loc[pos_qty_neg_price, "Đơn giá"]
+    
+    return df
+
+
 def generate_output_filename(df: pd.DataFrame) -> str:
     """Generate filename from date range in data."""
     df["year_month_dt"] = pd.to_datetime(
@@ -485,6 +528,9 @@ def main() -> None:
     # Rename columns
     filtered_rename_mapping = {k: v for k, v in RENAME_MAPPING.items() if v}
     final_df.rename(columns=filtered_rename_mapping, inplace=True)
+
+    # Fill nulls and adjust quantities
+    final_df = fill_and_adjust_rows(final_df)
 
     # Reorder columns
     final_df = final_df[[col for col in COLUMN_ORDER if col in final_df.columns]]

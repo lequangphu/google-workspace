@@ -546,6 +546,11 @@ def main() -> None:
         [df for df in processed_groups.values()], ignore_index=True
     )
 
+    # Step 5.5: Fill null Đơn giá and Thành tiền with 0 for rows with non-null Số lượng
+    for col in ["Đơn giá", "Thành tiền"]:
+        final_combined_df.loc[final_combined_df["Số lượng"].notna(), col] = \
+            final_combined_df.loc[final_combined_df["Số lượng"].notna(), col].fillna(0)
+
     # Step 6: Clean dates
     final_combined_df = clean_dates(final_combined_df)
 
