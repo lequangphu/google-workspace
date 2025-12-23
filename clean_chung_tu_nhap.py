@@ -11,6 +11,7 @@ This script:
 
 import csv
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -109,43 +110,47 @@ logger = logging.getLogger(__name__)
 
 
 def combine_headers(header_row1: List[str], header_row2: List[str]) -> Tuple[List[str], List[int]]:
-    """Combine two header rows into a single standardized header list.
-    
-    Args:
-        header_row1: Primary header row
-        header_row2: Secondary header row
-        
-    Returns:
-        tuple: (combined_headers, original_indices)
-    """
-    final_combined_headers = [
-        f"{header_row1[0].strip()}_{header_row2[0].strip()}",
-        f"{header_row1[0].strip()}_{header_row2[1].strip()}",
-        f"{header_row1[0].strip()}_{header_row2[2].strip()}",
-        header_row2[3].strip(),
-        header_row1[4].strip(),
-        header_row1[5].strip(),
-        header_row1[6].strip(),
-        header_row1[7].strip(),
-        f"{header_row1[8].strip()}_{header_row2[8].strip()}",
-        f"{header_row1[8].strip()}_{header_row2[9].strip()}",
-        f"{header_row1[8].strip()}_{header_row2[10].strip()}",
-        f"{header_row1[8].strip()}_{header_row2[14].strip()}",
-        f"{header_row1[8].strip()}_{header_row2[15].strip()}",
-        header_row1[22].strip(),
-        header_row1[23].strip().replace("\n", " "),
-        header_row1[24].strip(),
-        header_row1[25].strip(),
-        f"{header_row1[26].strip()}_{header_row2[26].strip()}",
-        f"{header_row1[26].strip()}_{header_row2[27].strip()}",
-        f"{header_row1[26].strip()}_{header_row2[28].strip()}",
-    ]
-    
-    original_indices = [
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 15, 22, 23, 24, 25, 26, 27, 28
-    ]
-    
-    return final_combined_headers, original_indices
+     """Combine two header rows into a single standardized header list.
+     
+     Args:
+         header_row1: Primary header row
+         header_row2: Secondary header row
+         
+     Returns:
+         tuple: (combined_headers, original_indices)
+     """
+     # Helper to normalize headers: strip and replace internal newlines/spaces
+     def normalize_header(h: str) -> str:
+         return re.sub(r"\s+", " ", h.strip())
+     
+     final_combined_headers = [
+         f"{normalize_header(header_row1[0])}_{normalize_header(header_row2[0])}",
+         f"{normalize_header(header_row1[0])}_{normalize_header(header_row2[1])}",
+         f"{normalize_header(header_row1[0])}_{normalize_header(header_row2[2])}",
+         normalize_header(header_row2[3]),
+         normalize_header(header_row1[4]),
+         normalize_header(header_row1[5]),
+         normalize_header(header_row1[6]),
+         normalize_header(header_row1[7]),
+         f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[8])}",
+         f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[9])}",
+         f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[10])}",
+         f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[14])}",
+         f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[15])}",
+         normalize_header(header_row1[22]),
+         normalize_header(header_row1[23]),
+         normalize_header(header_row1[24]),
+         normalize_header(header_row1[25]),
+         f"{normalize_header(header_row1[26])}_{normalize_header(header_row2[26])}",
+         f"{normalize_header(header_row1[26])}_{normalize_header(header_row2[27])}",
+         f"{normalize_header(header_row1[26])}_{normalize_header(header_row2[28])}",
+     ]
+     
+     original_indices = [
+         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 15, 22, 23, 24, 25, 26, 27, 28
+     ]
+     
+     return final_combined_headers, original_indices
 
 
 def is_float_check(value) -> bool:
