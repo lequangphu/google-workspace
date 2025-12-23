@@ -8,7 +8,9 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-# --- Configuration ---
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
 
 DATA_DIR = Path.cwd() / "data" / "raw"
 OUTPUT_DIR = Path.cwd() / "data" / "final"
@@ -69,7 +71,9 @@ TEXT_COLUMNS = ["Mã hàng", "Mã chứng từ", "Tên khách hàng", "Tên hàn
 NUMERIC_COLUMNS = ["Số lượng", "Đơn giá", "Thành tiền"]
 INTEGER_COLUMNS = ["Tháng", "Năm"]
 
-# --- Setup Logging ---
+# ============================================================================
+# LOGGING SETUP
+# ============================================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,7 +82,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# --- Helper Functions ---
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
 
 
 def extract_year_month_from_filename(
@@ -176,13 +182,17 @@ def extract_and_combine_headers(filepath: Path) -> List[str]:
 def process_dates(
     df: pd.DataFrame, year: Optional[int], month: Optional[int]
 ) -> pd.DataFrame:
-    """Parse and standardize the 'Ngày' date column."""
+    """Parse and standardize the 'Ngày' date column.
+    
+    Original XUAT logic: Try standard format first, fallback to day-only interpretation.
+    This preserves original behavior while still fixing encoding issues.
+    """
     if "Ngày" not in df.columns:
         df["Ngày_Year"] = pd.NA
         df["Ngày_Month"] = pd.NA
         return df
 
-    # Attempt to parse date directly
+    # Attempt to parse date directly with standard format
     df["Ngày_parsed"] = pd.to_datetime(df["Ngày"], format="%d/%m/%Y", errors="coerce")
 
     if year is not None and month is not None:
@@ -218,7 +228,7 @@ def process_dates(
 
 
 def read_csv_file(filepath: Path, header_tuple: Tuple) -> Optional[pd.DataFrame]:
-    """Read CSV file with encoding fallback and date processing."""
+    """Read CSV file with encoding fallback and robust date processing."""
     year, month = extract_year_month_from_filename(filepath)
 
     encodings = ["utf-8", "latin1"]
@@ -383,9 +393,39 @@ def process_groups(grouped_files: Dict) -> pd.DataFrame:
     )
 
 
+def generate_output_filename(df: pd.DataFrame) -> str:
+    """Generate filename from date range in data."""
+    df["year_month_dt"] = pd.to_datetime(
+        df["Năm"].astype(str)
+        + "-"
+        + df["Tháng"].astype(str).str.zfill(2)
+        + "-01",
+        errors="coerce",
+    )
+
+    valid_dates_df = df.dropna(subset=["year_month_dt"])
+    if not valid_dates_df.empty:
+        min_date = valid_dates_df["year_month_dt"].min()
+        max_date = valid_dates_df["year_month_dt"].max()
+        first_year, first_month = min_date.year, min_date.month
+        last_year, last_month = max_date.year, max_date.month
+    else:
+        first_year = first_month = last_year = last_month = 0
+        logger.warning("Could not determine year/month range from data")
+
+    filename = f"{first_year}_{first_month:02d}_{last_year}_{last_month:02d}_CT.XUAT_processed.csv"
+    df.drop(columns=["year_month_dt"], inplace=True, errors="ignore")
+    
+    return filename
+
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
 def main() -> None:
     """Main processing pipeline."""
-    logger.info("Starting export voucher processing")
+    logger.info("Starting export voucher (CT.XUAT) processing")
 
     # Find all CSV files
     csv_files = list(DATA_DIR.glob(FILE_PATTERN))
@@ -430,28 +470,8 @@ def main() -> None:
     # Reorder columns
     final_df = final_df[[col for col in COLUMN_ORDER if col in final_df.columns]]
 
-    # Determine output filename from date range
-    final_df["year_month_dt"] = pd.to_datetime(
-        final_df["Năm"].astype(str)
-        + "-"
-        + final_df["Tháng"].astype(str).str.zfill(2)
-        + "-01",
-        errors="coerce",
-    )
-
-    valid_dates_df = final_df.dropna(subset=["year_month_dt"])
-    if not valid_dates_df.empty:
-        min_date = valid_dates_df["year_month_dt"].min()
-        max_date = valid_dates_df["year_month_dt"].max()
-        first_year, first_month = min_date.year, min_date.month
-        last_year, last_month = max_date.year, max_date.month
-    else:
-        first_year = first_month = last_year = last_month = 0
-        logger.warning("Could not determine year/month range from data")
-
-    output_filename = f"{first_year}_{first_month:02d}_{last_year}_{last_month:02d}_CT.XUAT_processed.csv"
-
-    final_df.drop(columns=["year_month_dt"], inplace=True, errors="ignore")
+    # Generate output filename
+    output_filename = generate_output_filename(final_df)
 
     # Standardize column types
     final_df = standardize_column_types(final_df)
@@ -469,6 +489,7 @@ def main() -> None:
     output_filepath = OUTPUT_DIR / output_filename
     final_df.to_csv(output_filepath, index=False, encoding="utf-8")
     logger.info(f"Final processed DataFrame saved to: {output_filepath}")
+    logger.info(f"Rows: {len(final_df)}, Columns: {len(final_df.columns)}")
 
 
 if __name__ == "__main__":

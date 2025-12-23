@@ -6,13 +6,13 @@ Original file is located at
     https://colab.research.google.com/drive/1YrsWK_AB0M65-kaxSMz4Ki5sT5U81gpf
 """
 
-import pandas as pd
-import os
 import csv
-import re
 import logging
-from typing import Dict, List, Tuple, Optional
+import re
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
 from tqdm import tqdm
 
 # ============================================================================
@@ -20,8 +20,8 @@ from tqdm import tqdm
 # ============================================================================
 
 CONFIG = {
-    "input_dir": os.path.join(os.getcwd(), "data", "raw"),
-    "output_dir": os.path.join(os.getcwd(), "data", "final"),
+    "input_dir": Path.cwd() / "data" / "raw",
+    "output_dir": Path.cwd() / "data" / "final",
     "file_pattern": r"(\d{4})_(\d{1,2})_XNT\.csv",
     "file_suffix": "XNT.csv",
     "min_non_null_percentage": 90,
@@ -178,7 +178,7 @@ def extract_date_from_filename(filename: str) -> Optional[Tuple[str, str, str]]:
 # ============================================================================
 
 
-def find_input_files() -> List[str]:
+def find_input_files() -> List[Path]:
     """
     Finds all XNT.csv files in the input directory.
 
@@ -189,15 +189,10 @@ def find_input_files() -> List[str]:
         FileNotFoundError: If no XNT.csv files are found
     """
     input_dir = CONFIG["input_dir"]
-    if not os.path.exists(input_dir):
+    if not input_dir.exists():
         raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
-    all_files = os.listdir(input_dir)
-    xnt_files = [
-        os.path.join(input_dir, f)
-        for f in all_files
-        if f.endswith(CONFIG["file_suffix"]) and os.path.isfile(os.path.join(input_dir, f))
-    ]
+    xnt_files = sorted(input_dir.glob(f"*{CONFIG['file_suffix']}"))
 
     if not xnt_files:
         raise FileNotFoundError(
@@ -205,10 +200,10 @@ def find_input_files() -> List[str]:
         )
 
     logger.info(f"Found {len(xnt_files)} input files")
-    return sorted(xnt_files)
+    return xnt_files
 
 
-def group_files_by_headers(file_paths: List[str]) -> Dict[Tuple, List[str]]:
+def group_files_by_headers(file_paths: List[Path]) -> Dict[Tuple, List[Path]]:
     """
     Groups files by their header structure.
 
@@ -241,21 +236,21 @@ def group_files_by_headers(file_paths: List[str]) -> Dict[Tuple, List[str]]:
                         header_groups[combined_header_key] = []
                     header_groups[combined_header_key].append(file_path)
                 else:
-                    errors.append((file_path, "Insufficient header rows"))
+                    errors.append((file_path.name, "Insufficient header rows"))
         except Exception as e:
-            errors.append((file_path, str(e)))
+            errors.append((file_path.name, str(e)))
 
     if errors:
         logger.warning(f"Failed to read headers from {len(errors)} file(s)")
-        for file_path, error in errors:
-            logger.debug(f"  {os.path.basename(file_path)}: {error}")
+        for filename, error in errors:
+            logger.debug(f"  {filename}: {error}")
 
     logger.info(f"Grouped files into {len(header_groups)} header groups")
     return header_groups
 
 
 def load_and_process_group(
-    combined_header_key: Tuple, file_paths: List[str]
+    combined_header_key: Tuple, file_paths: List[Path]
 ) -> Optional[pd.DataFrame]:
     """
     Loads and consolidates dataframes for a group of files with matching headers.
@@ -272,7 +267,7 @@ def load_and_process_group(
 
     for file_path in file_paths:
         try:
-            filename = os.path.basename(file_path)
+            filename = file_path.name
             date_info = extract_date_from_filename(filename)
 
             if not date_info:
@@ -307,7 +302,7 @@ def load_and_process_group(
             group_dataframes.append(df)
 
         except Exception as e:
-            errors.append((os.path.basename(file_path), str(e)))
+            errors.append((file_path.name, str(e)))
 
     if errors:
         logger.warning(f"Failed to load {len(errors)} file(s) from group")
@@ -320,7 +315,7 @@ def load_and_process_group(
 
 
 def consolidate_files(
-    header_groups: Dict[Tuple, List[str]]
+    header_groups: Dict[Tuple, List[Path]]
 ) -> Dict[str, pd.DataFrame]:
     """
     Consolidates all file groups into dataframes.
@@ -492,7 +487,7 @@ def format_columns(final_df: pd.DataFrame) -> pd.DataFrame:
     return final_df
 
 
-def save_results(final_df: pd.DataFrame) -> Optional[str]:
+def save_results(final_df: pd.DataFrame) -> Optional[Path]:
     """
     Saves the final DataFrame to CSV with appropriate filename.
 
@@ -503,7 +498,7 @@ def save_results(final_df: pd.DataFrame) -> Optional[str]:
         Path to output file or None if save failed
     """
     output_dir = CONFIG["output_dir"]
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     if final_df.empty:
         logger.warning("Final DataFrame is empty. No output file generated.")
@@ -528,7 +523,7 @@ def save_results(final_df: pd.DataFrame) -> Optional[str]:
 
         output_filename = f"{first_year}_{first_month}_{last_year}_{last_month}_XNT_processed.csv"
 
-    output_filepath = os.path.join(output_dir, output_filename)
+    output_filepath = output_dir / output_filename
     final_df.to_csv(output_filepath, index=False, encoding="utf-8")
     logger.info(f"Saved output to: {output_filepath}")
     return output_filepath
