@@ -190,3 +190,7 @@ __marimo__/
 # Google API credentials
 token.json
 credentials.json
+
+# Refactoring changes
+REFACTORING_CHANGES.md
+REFACTORING_SUMMARY.md

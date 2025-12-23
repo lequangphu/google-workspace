@@ -1,5 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Process and clean Vietnamese export voucher (Chứng từ Xuất) CSV files."""
+"""Clean export receipt data (Chứng từ xuất) from CSV files.
+
+This script:
+1. Groups files by header structure (handles multiple patterns)
+2. Extracts and combines multi-level headers with uniqueness handling
+3. Parses dates and year/month from filename
+4. Validates dates against source metadata
+5. Calculates total quantity (bán lẻ + bán sì)
+6. Drops rows with zero/missing quantities
+7. Standardizes columns and exports cleaned data
+"""
 
 import logging
 import re
@@ -367,7 +377,16 @@ def process_groups(grouped_files: Dict) -> pd.DataFrame:
             combined_df.get("Bán sì", pd.Series(index=combined_df.index)),
             errors="coerce",
         ).fillna(0)
-        combined_df["Số lượng"] = so_luong_ban_le + ban_si
+        
+        # Handle alternative pattern where quantity is combined (Số lượng_Bán sì)
+        if "Số lượng_Bán sì" in combined_df.columns and so_luong_ban_le.sum() == 0 and ban_si.sum() == 0:
+            so_luong_ban_si = pd.to_numeric(
+                combined_df.get("Số lượng_Bán sì", pd.Series(index=combined_df.index)),
+                errors="coerce",
+            ).fillna(0)
+            combined_df["Số lượng"] = so_luong_ban_si
+        else:
+            combined_df["Số lượng"] = so_luong_ban_le + ban_si
 
         # Drop zero-quantity rows
         combined_df = combined_df[
