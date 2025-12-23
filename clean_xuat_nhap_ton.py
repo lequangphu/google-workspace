@@ -232,17 +232,19 @@ column_rename_map = {
 final_df = final_df.rename(columns=column_rename_map)
 
 # Add "Biên lãi gộp" column = "Lãi gộp cuối kỳ" / "Doanh thu cuối kỳ"
+# Vectorized operation is much faster than apply() for large datasets
 if 'Lãi gộp cuối kỳ' in final_df.columns and 'Doanh thu cuối kỳ' in final_df.columns:
-    final_df['Biên lãi gộp'] = final_df.apply(
-        lambda row: row['Lãi gộp cuối kỳ'] / row['Doanh thu cuối kỳ'] 
-                    if pd.notna(row['Doanh thu cuối kỳ']) and row['Doanh thu cuối kỳ'] != 0 
-                    else pd.NA,
-        axis=1
-    )
+    revenue = final_df['Doanh thu cuối kỳ']
+    margin = final_df['Lãi gộp cuối kỳ']
+    # Only divide where revenue is non-null and non-zero; otherwise NA
+    valid_revenue = (pd.notna(revenue)) & (revenue != 0)
+    final_df.loc[valid_revenue, 'Biên lãi gộp'] = margin[valid_revenue] / revenue[valid_revenue]
+    final_df.loc[~valid_revenue, 'Biên lãi gộp'] = pd.NA
 
-# Drop 'Xuất trong kỳ' column
+# Drop 'Xuất trong kỳ' column if it exists (redundant with detailed breakdown)
 if 'Xuất trong kỳ' in final_df.columns:
     final_df = final_df.drop(columns=['Xuất trong kỳ'])
+    print("Dropped redundant 'Xuất trong kỳ' column")
 
 # --- Drop rows where all "Số lượng*" columns are empty or zero ---
 so_luong_cols = [col for col in final_df.columns if col.startswith('Số lượng')]
