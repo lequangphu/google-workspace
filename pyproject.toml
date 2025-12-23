@@ -10,4 +10,5 @@ dependencies = [
     "google-auth-oauthlib",
     "ipython>=9.8.0",
     "pandas",
+    "tqdm>=4.67.1",
 ]
