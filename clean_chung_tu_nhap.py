@@ -420,6 +420,15 @@ def format_output(df):
                 df[col] = df[col].astype(str).str.upper()
             else:
                 df[col] = df[col].astype(str)
+    
+    # Clean text columns: strip leading/trailing spaces and collapse multiple spaces
+    for col in ["Tên hàng", "Tên nhà cung cấp"]:
+        if col in df.columns:
+            df.loc[:, col] = (
+                df[col]
+                .str.strip()
+                .str.replace(r"\s+", " ", regex=True)
+            )
 
     # Numeric columns
     for col in ["Số lượng", "Đơn giá", "Thành tiền"]:
