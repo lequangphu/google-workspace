@@ -40,8 +40,10 @@ SCRIPT_CLEAN_XNT = WORKSPACE_ROOT / "clean_xuat_nhap_ton.py"
 SCRIPT_GENERATE_PRODUCT_INFO = WORKSPACE_ROOT / "generate_product_info.py"
 
 GOOGLE_DRIVE_FOLDER_ID = "1J-3aAf8Hco3iL9-oFnfoABgjiLNdjI7H"
+GOOGLE_SHEETS_ID = "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k"
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 # State file to track modifications
@@ -160,6 +162,81 @@ def find_file_in_drive(
     except HttpError as e:
         logger.error(f"Error searching for {filename} on Drive: {e}")
         return None
+
+
+def add_csv_as_sheet_tab(
+    sheets_service, csv_filepath: Path, spreadsheet_id: str, replace: bool = True
+) -> bool:
+    """Add CSV as a tab/sheet in an existing Google Spreadsheet."""
+    try:
+        import pandas as pd
+        
+        # Sheet name: remove .csv extension
+        sheet_name = csv_filepath.stem
+        
+        # Get existing sheet metadata
+        spreadsheet = sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title))"
+        ).execute()
+        
+        sheet_properties = spreadsheet.get("sheets", [])
+        existing_sheet_id = None
+        
+        # Check if sheet already exists
+        for sheet in sheet_properties:
+            if sheet["properties"]["title"] == sheet_name:
+                existing_sheet_id = sheet["properties"]["sheetId"]
+                break
+        
+        # If sheet exists and we're replacing, clear it first
+        if existing_sheet_id is not None and replace:
+            logger.info(f"Clearing existing sheet: {sheet_name}")
+            sheets_service.spreadsheets().values().clear(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{sheet_name}'!A:Z",
+            ).execute()
+            sheet_id = existing_sheet_id
+        elif existing_sheet_id is not None:
+            logger.info(f"Sheet {sheet_name} already exists, skipping")
+            return True
+        else:
+            # Create new sheet
+            logger.info(f"Creating new sheet: {sheet_name}")
+            request = {
+                "addSheet": {
+                    "properties": {
+                        "title": sheet_name,
+                    }
+                }
+            }
+            response = sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": [request]},
+            ).execute()
+            sheet_id = response["replies"][0]["addSheet"]["properties"]["sheetId"]
+        
+        # Read CSV and prepare data
+        df = pd.read_csv(csv_filepath)
+        
+        # Convert NaN to None for JSON serialization
+        df_values = df.astype(object).where(pd.notna(df), None).values.tolist()
+        values = [df.columns.tolist()] + df_values
+        
+        # Write data to sheet
+        logger.info(f"Populating sheet: {sheet_name} ({len(df)} rows)")
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{sheet_name}'!A1",
+            valueInputOption="RAW",
+            body={"values": values},
+        ).execute()
+        
+        logger.info(f"Successfully added/updated sheet: {sheet_name}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error adding {csv_filepath.name} as sheet tab: {e}")
+        return False
 
 
 def upload_file_to_drive(
@@ -304,39 +381,38 @@ def step_generate_product_info() -> bool:
 
 
 def step_upload() -> bool:
-     """Step 3: Upload cleaned files and product info to Google Drive."""
-     logger.info("=" * 70)
-     logger.info("STEP 3: UPLOAD")
-     logger.info("=" * 70)
- 
-     try:
-         creds = authenticate_google_drive()
-         drive_service = build("drive", "v3", credentials=creds)
-     except Exception as e:
-         logger.error(f"Failed to authenticate with Google Drive: {e}")
-         return False
- 
-     # Collect files from both final and product directories
-     final_files = list_csv_files(DATA_FINAL_DIR)
-     product_files = list_csv_files(DATA_PRODUCT_DIR)
-     all_files = final_files + product_files
- 
-     if not all_files:
-         logger.warning("No CSV files found to upload")
-         return True
- 
-     logger.info(f"Found {len(all_files)} files to upload")
- 
-     all_succeeded = True
-     for filepath in all_files:
-         if not upload_file_to_drive(
-             drive_service, filepath, GOOGLE_DRIVE_FOLDER_ID, replace=True
-         ):
-             all_succeeded = False
- 
-     if all_succeeded:
-         logger.info("All files uploaded successfully")
-     return all_succeeded
+      """Step 3: Upload product info as tabs in target Google Sheet."""
+      logger.info("=" * 70)
+      logger.info("STEP 3: UPLOAD")
+      logger.info("=" * 70)
+  
+      try:
+          creds = authenticate_google_drive()
+          sheets_service = build("sheets", "v4", credentials=creds)
+      except Exception as e:
+          logger.error(f"Failed to authenticate with Google Sheets: {e}")
+          return False
+  
+      # Only upload product files (from /data/product/) as sheet tabs
+      product_files = list_csv_files(DATA_PRODUCT_DIR)
+  
+      if not product_files:
+          logger.warning("No product files found to upload")
+          return True
+  
+      logger.info(f"Found {len(product_files)} product files to upload as sheet tabs")
+      logger.info(f"Target spreadsheet: https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID}")
+  
+      all_succeeded = True
+      for filepath in product_files:
+          if not add_csv_as_sheet_tab(
+              sheets_service, filepath, GOOGLE_SHEETS_ID, replace=True
+          ):
+              all_succeeded = False
+  
+      if all_succeeded:
+          logger.info("All product files uploaded successfully as sheet tabs")
+      return all_succeeded
 
 
 # === PIPELINE ORCHESTRATION ===
