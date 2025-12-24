@@ -19,12 +19,12 @@ Do NOT use `pip install` or `poetry`.
 
 ## Setup
 ```bash
-cd python
 uv sync  # Install project dependencies
-source .venv/bin/activate  # Activate environment (optional)
 ```
 
 ## Running Scripts
+**Always use `uv run` to execute any Python script.** Never use `python` directly.
+
 ```bash
 uv run script_name.py
 ```
@@ -36,7 +36,7 @@ Downloads data from Google Sheets to `/data/raw/` directory.
 - Uses Google Drive API to find and download spreadsheets
 - Extracts specified sheet tabs (CT.NHAP, CT.XUAT, XNT)
 - Compares remote modified times to skip unchanged files
-- Run: `uv run ingest.py` or `python pipeline.py --step ingest`
+- Run: `uv run pipeline.py --step ingest`
 
 ### clean_chung_tu_nhap.py
 Cleans import receipt (Chứng từ nhập) data.

@@ -31,11 +31,13 @@ from googleapiclient.http import MediaFileUpload
 WORKSPACE_ROOT = Path(__file__).parent
 DATA_RAW_DIR = WORKSPACE_ROOT / "data" / "raw"
 DATA_FINAL_DIR = WORKSPACE_ROOT / "data" / "final"
+DATA_PRODUCT_DIR = WORKSPACE_ROOT / "data" / "product"
 
 SCRIPT_INGEST = WORKSPACE_ROOT / "ingest.py"
 SCRIPT_CLEAN_NHAP = WORKSPACE_ROOT / "clean_chung_tu_nhap.py"
 SCRIPT_CLEAN_XUAT = WORKSPACE_ROOT / "clean_chung_tu_xuat.py"
 SCRIPT_CLEAN_XNT = WORKSPACE_ROOT / "clean_xuat_nhap_ton.py"
+SCRIPT_GENERATE_PRODUCT_INFO = WORKSPACE_ROOT / "generate_product_info.py"
 
 GOOGLE_DRIVE_FOLDER_ID = "1J-3aAf8Hco3iL9-oFnfoABgjiLNdjI7H"
 SCOPES = [
@@ -221,112 +223,165 @@ def step_ingest() -> bool:
 
 
 def step_clean() -> bool:
-    """Step 2: Clean data from raw to final."""
-    logger.info("=" * 70)
-    logger.info("STEP 2: CLEAN")
-    logger.info("=" * 70)
+     """Step 2: Clean data from raw to final."""
+     logger.info("=" * 70)
+     logger.info("STEP 2: CLEAN")
+     logger.info("=" * 70)
+ 
+     # Clear final directory before running cleaners
+     if DATA_FINAL_DIR.exists():
+         final_files = list(DATA_FINAL_DIR.glob("*.csv"))
+         if final_files:
+             logger.info(f"Clearing {len(final_files)} files from /data/final/")
+             for filepath in final_files:
+                 filepath.unlink()
+                 logger.debug(f"Deleted {filepath.name}")
+ 
+     clean_scripts = [
+         ("CT.NHAP", SCRIPT_CLEAN_NHAP),
+         ("CT.XUAT", SCRIPT_CLEAN_XUAT),
+         ("XNT", SCRIPT_CLEAN_XNT),
+     ]
+ 
+     all_succeeded = True
+     for script_name, script_path in clean_scripts:
+         if not script_path.exists():
+             logger.warning(f"Clean script not found: {script_path}")
+             continue
+ 
+         logger.info(f"Running {script_name} cleaner...")
+         returncode, stdout, stderr = run_command(["uv", "run", str(script_path)])
+ 
+         if stdout:
+             logger.info(stdout)
+         if stderr and returncode != 0:
+             logger.warning(stderr)
+ 
+         if returncode == 0:
+             logger.info(f"{script_name} cleaning completed")
+         else:
+             logger.error(f"{script_name} cleaning failed with return code {returncode}")
+             all_succeeded = False
+ 
+     if all_succeeded:
+         logger.info("All cleaning scripts completed successfully")
+     return all_succeeded
 
-    # Clear final directory before running cleaners
-    if DATA_FINAL_DIR.exists():
-        final_files = list(DATA_FINAL_DIR.glob("*.csv"))
-        if final_files:
-            logger.info(f"Clearing {len(final_files)} files from /data/final/")
-            for filepath in final_files:
-                filepath.unlink()
-                logger.debug(f"Deleted {filepath.name}")
 
-    clean_scripts = [
-        ("CT.NHAP", SCRIPT_CLEAN_NHAP),
-        ("CT.XUAT", SCRIPT_CLEAN_XUAT),
-        ("XNT", SCRIPT_CLEAN_XNT),
-    ]
-
-    all_succeeded = True
-    for script_name, script_path in clean_scripts:
-        if not script_path.exists():
-            logger.warning(f"Clean script not found: {script_path}")
-            continue
-
-        logger.info(f"Running {script_name} cleaner...")
-        returncode, stdout, stderr = run_command(["uv", "run", str(script_path)])
-
-        if stdout:
-            logger.info(stdout)
-        if stderr and returncode != 0:
-            logger.warning(stderr)
-
-        if returncode == 0:
-            logger.info(f"{script_name} cleaning completed")
-        else:
-            logger.error(f"{script_name} cleaning failed with return code {returncode}")
-            all_succeeded = False
-
-    if all_succeeded:
-        logger.info("All cleaning scripts completed successfully")
-    return all_succeeded
+def step_generate_product_info() -> bool:
+     """Step 2.5: Generate product information from cleaned data."""
+     logger.info("=" * 70)
+     logger.info("STEP 2.5: GENERATE PRODUCT INFO")
+     logger.info("=" * 70)
+ 
+     if not SCRIPT_GENERATE_PRODUCT_INFO.exists():
+         logger.warning(f"Product generation script not found: {SCRIPT_GENERATE_PRODUCT_INFO}")
+         return False
+ 
+     # Clear product directory before generating
+     if DATA_PRODUCT_DIR.exists():
+         product_files = list(DATA_PRODUCT_DIR.glob("*.csv"))
+         if product_files:
+             logger.info(f"Clearing {len(product_files)} files from /data/product/")
+             for filepath in product_files:
+                 filepath.unlink()
+                 logger.debug(f"Deleted {filepath.name}")
+ 
+     logger.info("Running product info generator...")
+     returncode, stdout, stderr = run_command(["uv", "run", str(SCRIPT_GENERATE_PRODUCT_INFO)])
+ 
+     if stdout:
+         logger.info(stdout)
+     if stderr and returncode != 0:
+         logger.warning(stderr)
+ 
+     if returncode == 0:
+         logger.info("Product info generation completed")
+         return True
+     else:
+         logger.error(f"Product info generation failed with return code {returncode}")
+         return False
 
 
 def step_upload() -> bool:
-    """Step 3: Upload cleaned files to Google Drive."""
-    logger.info("=" * 70)
-    logger.info("STEP 3: UPLOAD")
-    logger.info("=" * 70)
-
-    try:
-        creds = authenticate_google_drive()
-        drive_service = build("drive", "v3", credentials=creds)
-    except Exception as e:
-        logger.error(f"Failed to authenticate with Google Drive: {e}")
-        return False
-
-    final_files = list_csv_files(DATA_FINAL_DIR)
-
-    if not final_files:
-        logger.warning("No final CSV files found to upload")
-        return True
-
-    logger.info(f"Found {len(final_files)} files to upload")
-
-    all_succeeded = True
-    for filepath in final_files:
-        if not upload_file_to_drive(
-            drive_service, filepath, GOOGLE_DRIVE_FOLDER_ID, replace=True
-        ):
-            all_succeeded = False
-
-    if all_succeeded:
-        logger.info("All files uploaded successfully")
-    return all_succeeded
+     """Step 3: Upload cleaned files and product info to Google Drive."""
+     logger.info("=" * 70)
+     logger.info("STEP 3: UPLOAD")
+     logger.info("=" * 70)
+ 
+     try:
+         creds = authenticate_google_drive()
+         drive_service = build("drive", "v3", credentials=creds)
+     except Exception as e:
+         logger.error(f"Failed to authenticate with Google Drive: {e}")
+         return False
+ 
+     # Collect files from both final and product directories
+     final_files = list_csv_files(DATA_FINAL_DIR)
+     product_files = list_csv_files(DATA_PRODUCT_DIR)
+     all_files = final_files + product_files
+ 
+     if not all_files:
+         logger.warning("No CSV files found to upload")
+         return True
+ 
+     logger.info(f"Found {len(all_files)} files to upload")
+ 
+     all_succeeded = True
+     for filepath in all_files:
+         if not upload_file_to_drive(
+             drive_service, filepath, GOOGLE_DRIVE_FOLDER_ID, replace=True
+         ):
+             all_succeeded = False
+ 
+     if all_succeeded:
+         logger.info("All files uploaded successfully")
+     return all_succeeded
 
 
 # === PIPELINE ORCHESTRATION ===
 
 
 def should_run_clean() -> bool:
-    """Determine if cleaning step should run."""
-    # Always clean if final data directory is missing
-    if not DATA_FINAL_DIR.exists():
-        logger.info("Final data directory doesn't exist, running clean")
-        return True
+     """Determine if cleaning step should run."""
+     # Always clean if final data directory is missing
+     if not DATA_FINAL_DIR.exists():
+         logger.info("Final data directory doesn't exist, running clean")
+         return True
+ 
+     # Check if any final CSV files are missing
+     raw_files = list_csv_files(DATA_RAW_DIR)
+     final_files = list_csv_files(DATA_FINAL_DIR)
+ 
+     if not final_files and raw_files:
+         logger.info("No final files found but raw files exist, running clean")
+         return True
+ 
+     # Check if raw directory was modified more recently than final directory
+     raw_mtime = get_directory_mtime(DATA_RAW_DIR)
+     final_mtime = get_directory_mtime(DATA_FINAL_DIR)
+ 
+     if raw_mtime and final_mtime and raw_mtime > final_mtime:
+         logger.info("Raw data was modified after final data, running clean")
+         return True
+ 
+     logger.info("Final data is up-to-date, skipping clean")
+     return False
 
-    # Check if any final CSV files are missing
-    raw_files = list_csv_files(DATA_RAW_DIR)
-    final_files = list_csv_files(DATA_FINAL_DIR)
 
-    if not final_files and raw_files:
-        logger.info("No final files found but raw files exist, running clean")
-        return True
-
-    # Check if raw directory was modified more recently than final directory
-    raw_mtime = get_directory_mtime(DATA_RAW_DIR)
-    final_mtime = get_directory_mtime(DATA_FINAL_DIR)
-
-    if raw_mtime and final_mtime and raw_mtime > final_mtime:
-        logger.info("Raw data was modified after final data, running clean")
-        return True
-
-    logger.info("Final data is up-to-date, skipping clean")
-    return False
+def should_run_generate_product_info(clean_succeeded: bool) -> bool:
+     """Determine if product info generation should run."""
+     if not clean_succeeded:
+         logger.info("Clean step did not succeed, skipping product info generation")
+         return False
+ 
+     final_files = list_csv_files(DATA_FINAL_DIR)
+     if not final_files:
+         logger.info("No final files available for product generation")
+         return False
+ 
+     logger.info("Final files ready for product info generation")
+     return True
 
 
 def should_run_upload(clean_succeeded: bool) -> bool:
@@ -345,36 +400,46 @@ def should_run_upload(clean_succeeded: bool) -> bool:
 
 
 def run_full_pipeline() -> bool:
-    """Run complete pipeline: ingest → clean → upload."""
-    logger.info("\n" + "=" * 70)
-    logger.info("STARTING FULL PIPELINE")
-    logger.info("=" * 70 + "\n")
-
-    # Step 1: Ingest
-    if not step_ingest():
-        logger.error("Ingest failed, aborting pipeline")
-        return False
-
-    # Step 2: Clean (conditional)
-    if should_run_clean():
-        if not step_clean():
-            logger.error("Clean failed, aborting pipeline")
-            return False
-    else:
-        logger.info("Skipping clean step")
-
-    # Step 3: Upload (conditional)
-    if should_run_upload(clean_succeeded=True):
-        if not step_upload():
-            logger.error("Upload failed, but data is ready")
-            return False
-    else:
-        logger.info("Skipping upload step")
-
-    logger.info("\n" + "=" * 70)
-    logger.info("PIPELINE COMPLETED SUCCESSFULLY")
-    logger.info("=" * 70 + "\n")
-    return True
+     """Run complete pipeline: ingest → clean → generate product info → upload."""
+     logger.info("\n" + "=" * 70)
+     logger.info("STARTING FULL PIPELINE")
+     logger.info("=" * 70 + "\n")
+ 
+     # Step 1: Ingest
+     if not step_ingest():
+         logger.error("Ingest failed, aborting pipeline")
+         return False
+ 
+     # Step 2: Clean (conditional)
+     clean_succeeded = False
+     if should_run_clean():
+         clean_succeeded = step_clean()
+         if not clean_succeeded:
+             logger.error("Clean failed, aborting pipeline")
+             return False
+     else:
+         logger.info("Skipping clean step")
+         clean_succeeded = True
+ 
+     # Step 2.5: Generate product info (conditional)
+     if should_run_generate_product_info(clean_succeeded):
+         if not step_generate_product_info():
+             logger.error("Product info generation failed, but continuing to upload")
+     else:
+         logger.info("Skipping product info generation step")
+ 
+     # Step 3: Upload (conditional)
+     if should_run_upload(clean_succeeded):
+         if not step_upload():
+             logger.error("Upload failed, but data is ready")
+             return False
+     else:
+         logger.info("Skipping upload step")
+ 
+     logger.info("\n" + "=" * 70)
+     logger.info("PIPELINE COMPLETED SUCCESSFULLY")
+     logger.info("=" * 70 + "\n")
+     return True
 
 
 # === MAIN ===
@@ -400,6 +465,7 @@ def main():
     # Create directories if they don't exist
     DATA_RAW_DIR.mkdir(parents=True, exist_ok=True)
     DATA_FINAL_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_PRODUCT_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.step == "ingest":
         success = step_ingest()
