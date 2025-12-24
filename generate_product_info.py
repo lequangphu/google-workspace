@@ -541,20 +541,20 @@ def main() -> None:
     
     # Step 8: Save product info
     product_path = output_dir / CONFIG["product_file"]
-    product_info_df.to_csv(product_path, index=False, encoding="utf-8-sig")
+    product_info_df.sort_values("Mã hàng mới").to_csv(product_path, index=False, encoding="utf-8-sig")
     logger.info(f"Product info saved to: {product_path}")
     logger.info(f"  Total products: {len(product_info_df)}")
     
     # Step 9: Save nhập summary
     nhap_path = output_dir / CONFIG["nhap_summary_file"]
-    nhap_summary_df.to_csv(nhap_path, index=False, encoding="utf-8-sig")
+    nhap_summary_df.sort_values("Mã hàng mới").to_csv(nhap_path, index=False, encoding="utf-8-sig")
     logger.info(f"Nhập summary saved to: {nhap_path}")
     logger.info(f"  Columns: {', '.join(nhap_summary_df.columns)}")
     
     # Step 10: Save xuất summary
     if not xuat_summary_df.empty:
         xuat_path = output_dir / CONFIG["xuat_summary_file"]
-        xuat_summary_df.to_csv(xuat_path, index=False, encoding="utf-8-sig")
+        xuat_summary_df.sort_values("Mã hàng mới").to_csv(xuat_path, index=False, encoding="utf-8-sig")
         logger.info(f"Xuất summary saved to: {xuat_path}")
         logger.info(f"  Products with xuất data: {len(xuat_summary_df)}")
         logger.info(f"  Columns: {', '.join(xuat_summary_df.columns)}")
@@ -564,7 +564,7 @@ def main() -> None:
     # Step 11: Save inventory summary
     if not inventory_df.empty:
         inventory_path = output_dir / CONFIG["inventory_file"]
-        inventory_df.to_csv(inventory_path, index=False, encoding="utf-8-sig")
+        inventory_df.sort_values("Mã hàng mới").to_csv(inventory_path, index=False, encoding="utf-8-sig")
         logger.info(f"Inventory summary saved to: {inventory_path}")
         logger.info(f"  Products with inventory: {len(inventory_df[inventory_df['Tổng số lượng'] > 0])}")
         logger.info(f"  Columns: {', '.join(inventory_df.columns)}")
@@ -574,7 +574,7 @@ def main() -> None:
     # Step 12: Save import prices
     if not nhap_price_df.empty:
         nhap_price_path = output_dir / CONFIG["nhap_price_file"]
-        nhap_price_df.to_csv(nhap_price_path, index=False, encoding="utf-8-sig")
+        nhap_price_df.sort_values("Mã hàng mới").to_csv(nhap_price_path, index=False, encoding="utf-8-sig")
         logger.info(f"Import prices saved to: {nhap_price_path}")
         logger.info(f"  Columns: {', '.join(nhap_price_df.columns)}")
     else:
@@ -583,7 +583,7 @@ def main() -> None:
     # Step 13: Save export prices
     if not xuat_price_df.empty:
         xuat_price_path = output_dir / CONFIG["xuat_price_file"]
-        xuat_price_df.to_csv(xuat_price_path, index=False, encoding="utf-8-sig")
+        xuat_price_df.sort_values("Mã hàng mới").to_csv(xuat_price_path, index=False, encoding="utf-8-sig")
         logger.info(f"Export prices saved to: {xuat_price_path}")
         logger.info(f"  Columns: {', '.join(xuat_price_df.columns)}")
     else:
