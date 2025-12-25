@@ -88,6 +88,31 @@ def get_longest_name(group: pd.DataFrame) -> str:
     return max(names, key=len)
 
 
+def standardize_brand_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardize brand names in 'Tên hàng' column.
+    
+    Case-insensitive matching with all-caps replacement:
+    - CHENGSIN → CHENGSHIN
+    - MICHENLIN → MICHELIN
+    - CAOSUMINA → CASUMINA
+    """
+    replacements = {
+        "chengsin": "CHENGSHIN",
+        "michenlin": "MICHELIN",
+        "caosumina": "CASUMINA",
+    }
+    
+    df = df.copy()
+    
+    for old, new in replacements.items():
+        # Case-insensitive replacement using regex
+        df["Tên hàng"] = df["Tên hàng"].str.replace(
+            old, new, case=False, regex=False
+        )
+    
+    return df
+
+
 def aggregate_by_year(
     group: pd.DataFrame, include_year_breakdown: bool = False
 ) -> Dict[str, float]:
@@ -681,7 +706,8 @@ def main() -> None:
     output_dir = CONFIG["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 9: Save product info
+    # Step 9: Standardize brand names and save product info
+    product_info_df = standardize_brand_names(product_info_df)
     product_path = output_dir / CONFIG["product_file"]
     product_info_df.sort_values("Mã hàng mới").to_csv(
         product_path, index=False, encoding="utf-8-sig"
