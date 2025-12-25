@@ -27,7 +27,7 @@ from tqdm import tqdm
 
 CONFIG = {
     "input_dir": Path.cwd() / "data" / "raw",
-    "output_dir": Path.cwd() / "data" / "final",
+    "output_dir": Path.cwd() / "data" / "cleaned",
     "file_pattern": r"(\d{4})_(\d{1,2})_XNT\.csv",
     "file_suffix": "XNT.csv",
     "min_non_null_percentage": 90,
@@ -530,7 +530,7 @@ def save_results(final_df: pd.DataFrame) -> Optional[Path]:
     # Determine period from data
     final_df_valid = final_df.dropna(subset=["Ngày"])
     if final_df_valid.empty:
-        output_filename = "unspecified_period_XNT_processed.csv"
+        output_filename = "Xuất nhập tồn.csv"
     else:
         min_date = final_df_valid["Ngày"].min()
         max_date = final_df_valid["Ngày"].max()
@@ -541,7 +541,7 @@ def save_results(final_df: pd.DataFrame) -> Optional[Path]:
         last_month = str(max_date.month).zfill(2)
 
         output_filename = (
-            f"{first_year}_{first_month}_{last_year}_{last_month}_XNT_processed.csv"
+            f"Xuất nhập tồn {first_year}-{first_month}_{last_year}-{last_month}.csv"
         )
 
     output_filepath = output_dir / output_filename

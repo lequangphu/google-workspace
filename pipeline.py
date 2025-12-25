@@ -5,8 +5,8 @@ Data Pipeline Orchestrator
 
 Workflow:
 1. Ingest: Download data from Google Sheets to /data/raw/
-2. Clean: Process raw data to /data/final/ (only if ingest modified files OR final files missing)
-3. Upload: Upload final files to Google Drive (only if clean modified files)
+2. Clean: Process raw data to /data/cleaned/ (only if ingest modified files OR cleaned files missing)
+3. Upload: Upload cleaned files to Google Drive (only if clean modified files)
 
 Each step can be run independently with --step flag, or full pipeline with --full.
 """
@@ -30,8 +30,8 @@ from googleapiclient.http import MediaFileUpload
 
 WORKSPACE_ROOT = Path(__file__).parent
 DATA_RAW_DIR = WORKSPACE_ROOT / "data" / "raw"
-DATA_FINAL_DIR = WORKSPACE_ROOT / "data" / "final"
-DATA_PRODUCT_DIR = WORKSPACE_ROOT / "data" / "product"
+DATA_FINAL_DIR = WORKSPACE_ROOT / "data" / "cleaned"
+DATA_PRODUCT_DIR = WORKSPACE_ROOT / "data" / "reports"
 
 SCRIPT_INGEST = WORKSPACE_ROOT / "ingest.py"
 SCRIPT_CLEAN_NHAP = WORKSPACE_ROOT / "clean_chung_tu_nhap.py"
@@ -40,7 +40,8 @@ SCRIPT_CLEAN_XNT = WORKSPACE_ROOT / "clean_xuat_nhap_ton.py"
 SCRIPT_GENERATE_PRODUCT_INFO = WORKSPACE_ROOT / "generate_product_info.py"
 
 GOOGLE_DRIVE_FOLDER_ID = "1J-3aAf8Hco3iL9-oFnfoABgjiLNdjI7H"
-GOOGLE_SHEETS_ID = "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k"
+GOOGLE_SHEETS_ID_CLEANED = "1KYz8S4WSL5vG2TIYsZKKIwNulKLvMc82iBMso_u49dk"
+GOOGLE_SHEETS_ID_REPORTS = "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k"
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
@@ -305,11 +306,11 @@ def step_clean() -> bool:
      logger.info("STEP 2: CLEAN")
      logger.info("=" * 70)
  
-     # Clear final directory before running cleaners
+     # Clear cleaned directory before running cleaners
      if DATA_FINAL_DIR.exists():
          final_files = list(DATA_FINAL_DIR.glob("*.csv"))
          if final_files:
-             logger.info(f"Clearing {len(final_files)} files from /data/final/")
+             logger.info(f"Clearing {len(final_files)} files from /data/cleaned/")
              for filepath in final_files:
                  filepath.unlink()
                  logger.debug(f"Deleted {filepath.name}")
@@ -355,11 +356,11 @@ def step_generate_product_info() -> bool:
          logger.warning(f"Product generation script not found: {SCRIPT_GENERATE_PRODUCT_INFO}")
          return False
  
-     # Clear product directory before generating
+     # Clear reports directory before generating
      if DATA_PRODUCT_DIR.exists():
          product_files = list(DATA_PRODUCT_DIR.glob("*.csv"))
          if product_files:
-             logger.info(f"Clearing {len(product_files)} files from /data/product/")
+             logger.info(f"Clearing {len(product_files)} files from /data/reports/")
              for filepath in product_files:
                  filepath.unlink()
                  logger.debug(f"Deleted {filepath.name}")
@@ -381,98 +382,110 @@ def step_generate_product_info() -> bool:
 
 
 def step_upload() -> bool:
-      """Step 3: Upload product info as tabs in target Google Sheet."""
-      logger.info("=" * 70)
-      logger.info("STEP 3: UPLOAD")
-      logger.info("=" * 70)
-  
-      try:
-          creds = authenticate_google_drive()
-          sheets_service = build("sheets", "v4", credentials=creds)
-      except Exception as e:
-          logger.error(f"Failed to authenticate with Google Sheets: {e}")
-          return False
-  
-      # Only upload product files (from /data/product/) as sheet tabs
-      product_files = list_csv_files(DATA_PRODUCT_DIR)
-  
-      if not product_files:
-          logger.warning("No product files found to upload")
-          return True
-  
-      logger.info(f"Found {len(product_files)} product files to upload as sheet tabs")
-      logger.info(f"Target spreadsheet: https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID}")
-  
-      all_succeeded = True
-      for filepath in product_files:
-          if not add_csv_as_sheet_tab(
-              sheets_service, filepath, GOOGLE_SHEETS_ID, replace=True
-          ):
-              all_succeeded = False
-  
-      if all_succeeded:
-          logger.info("All product files uploaded successfully as sheet tabs")
-      return all_succeeded
+       """Step 3: Upload cleaned and report files to respective target sheets."""
+       logger.info("=" * 70)
+       logger.info("STEP 3: UPLOAD")
+       logger.info("=" * 70)
+   
+       try:
+           creds = authenticate_google_drive()
+           sheets_service = build("sheets", "v4", credentials=creds)
+       except Exception as e:
+           logger.error(f"Failed to authenticate with Google Sheets: {e}")
+           return False
+   
+       # Upload cleaned files to GOOGLE_SHEETS_ID_CLEANED
+       cleaned_files = list_csv_files(DATA_FINAL_DIR)
+       report_files = list_csv_files(DATA_PRODUCT_DIR)
+   
+       all_succeeded = True
+       
+       if cleaned_files:
+           logger.info(f"Uploading {len(cleaned_files)} cleaned files to cleaned sheet")
+           logger.info(f"Target spreadsheet: https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID_CLEANED}")
+           for filepath in cleaned_files:
+               if not add_csv_as_sheet_tab(
+                   sheets_service, filepath, GOOGLE_SHEETS_ID_CLEANED, replace=True
+               ):
+                   all_succeeded = False
+       
+       # Upload report files to GOOGLE_SHEETS_ID_REPORTS
+       if report_files:
+           logger.info(f"Uploading {len(report_files)} report files to reports sheet")
+           logger.info(f"Target spreadsheet: https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID_REPORTS}")
+           for filepath in report_files:
+               if not add_csv_as_sheet_tab(
+                   sheets_service, filepath, GOOGLE_SHEETS_ID_REPORTS, replace=True
+               ):
+                   all_succeeded = False
+       
+       if not cleaned_files and not report_files:
+           logger.warning("No cleaned or report files found to upload")
+           return True
+   
+       if all_succeeded:
+           logger.info("All files uploaded successfully as sheet tabs")
+       return all_succeeded
 
 
 # === PIPELINE ORCHESTRATION ===
 
 
 def should_run_clean() -> bool:
-     """Determine if cleaning step should run."""
-     # Always clean if final data directory is missing
-     if not DATA_FINAL_DIR.exists():
-         logger.info("Final data directory doesn't exist, running clean")
-         return True
- 
-     # Check if any final CSV files are missing
-     raw_files = list_csv_files(DATA_RAW_DIR)
-     final_files = list_csv_files(DATA_FINAL_DIR)
- 
-     if not final_files and raw_files:
-         logger.info("No final files found but raw files exist, running clean")
-         return True
- 
-     # Check if raw directory was modified more recently than final directory
-     raw_mtime = get_directory_mtime(DATA_RAW_DIR)
-     final_mtime = get_directory_mtime(DATA_FINAL_DIR)
- 
-     if raw_mtime and final_mtime and raw_mtime > final_mtime:
-         logger.info("Raw data was modified after final data, running clean")
-         return True
- 
-     logger.info("Final data is up-to-date, skipping clean")
-     return False
+      """Determine if cleaning step should run."""
+      # Always clean if cleaned data directory is missing
+      if not DATA_FINAL_DIR.exists():
+          logger.info("Cleaned data directory doesn't exist, running clean")
+          return True
+  
+      # Check if any cleaned CSV files are missing
+      raw_files = list_csv_files(DATA_RAW_DIR)
+      final_files = list_csv_files(DATA_FINAL_DIR)
+  
+      if not final_files and raw_files:
+          logger.info("No cleaned files found but raw files exist, running clean")
+          return True
+  
+      # Check if raw directory was modified more recently than cleaned directory
+      raw_mtime = get_directory_mtime(DATA_RAW_DIR)
+      final_mtime = get_directory_mtime(DATA_FINAL_DIR)
+  
+      if raw_mtime and final_mtime and raw_mtime > final_mtime:
+          logger.info("Raw data was modified after cleaned data, running clean")
+          return True
+  
+      logger.info("Cleaned data is up-to-date, skipping clean")
+      return False
 
 
 def should_run_generate_product_info(clean_succeeded: bool) -> bool:
-     """Determine if product info generation should run."""
+      """Determine if product info generation should run."""
+      if not clean_succeeded:
+          logger.info("Clean step did not succeed, skipping product info generation")
+          return False
+  
+      final_files = list_csv_files(DATA_FINAL_DIR)
+      if not final_files:
+          logger.info("No cleaned files available for product generation")
+          return False
+  
+      logger.info("Cleaned files ready for product info generation")
+      return True
+
+
+def should_run_upload(clean_succeeded: bool) -> bool:
+     """Determine if upload step should run."""
      if not clean_succeeded:
-         logger.info("Clean step did not succeed, skipping product info generation")
+         logger.info("Clean step did not succeed, skipping upload")
          return False
  
      final_files = list_csv_files(DATA_FINAL_DIR)
      if not final_files:
-         logger.info("No final files available for product generation")
+         logger.info("No cleaned files to upload")
          return False
  
-     logger.info("Final files ready for product info generation")
+     logger.info("Cleaned files ready for upload")
      return True
-
-
-def should_run_upload(clean_succeeded: bool) -> bool:
-    """Determine if upload step should run."""
-    if not clean_succeeded:
-        logger.info("Clean step did not succeed, skipping upload")
-        return False
-
-    final_files = list_csv_files(DATA_FINAL_DIR)
-    if not final_files:
-        logger.info("No final files to upload")
-        return False
-
-    logger.info("Final files ready for upload")
-    return True
 
 
 def run_full_pipeline() -> bool:

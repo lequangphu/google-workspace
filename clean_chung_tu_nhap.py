@@ -26,7 +26,7 @@ import pandas as pd
 CONFIG = {
     "data_dir": Path.cwd() / "data" / "raw",
     "file_pattern": "*CT.NHAP.csv",
-    "output_dir": Path.cwd() / "data" / "final",
+    "output_dir": Path.cwd() / "data" / "cleaned",
     "header_row_main": 3,  # 0-indexed
     "header_row_sub": 4,
     "data_start_row": 5,
@@ -478,12 +478,11 @@ def generate_output_filename(df: pd.DataFrame) -> str:
         max_year, max_month = max_date.year, max_date.month
         
         filename = (
-            f"{min_year:04d}_{min_month:02d}_{max_year:04d}_{max_month:02d}_"
-            f"CT.NHAP_processed.csv"
+            f"Chi tiết nhập {min_year:04d}-{min_month:02d}_{max_year:04d}-{max_month:02d}.csv"
         )
         df.drop(columns=["_source_date"], inplace=True)
     else:
-        filename = "CT.NHAP_processed.csv"
+        filename = "Chi tiết nhập.csv"
 
     return filename
 

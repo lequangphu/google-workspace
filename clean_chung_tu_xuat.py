@@ -23,7 +23,7 @@ import pandas as pd
 # ============================================================================
 
 DATA_DIR = Path.cwd() / "data" / "raw"
-OUTPUT_DIR = Path.cwd() / "data" / "final"
+OUTPUT_DIR = Path.cwd() / "data" / "cleaned"
 FILE_PATTERN = "*CT.XUAT.csv"
 
 AUXILIARY_COLUMNS_TO_DROP = [
@@ -475,7 +475,7 @@ def generate_output_filename(df: pd.DataFrame) -> str:
         first_year = first_month = last_year = last_month = 0
         logger.warning("Could not determine year/month range from data")
 
-    filename = f"{first_year}_{first_month:02d}_{last_year}_{last_month:02d}_CT.XUAT_processed.csv"
+    filename = f"Chi tiết xuất {first_year:04d}-{first_month:02d}_{last_year:04d}-{last_month:02d}.csv"
     df.drop(columns=["year_month_dt"], inplace=True, errors="ignore")
     
     return filename

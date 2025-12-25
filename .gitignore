@@ -1,8 +1,5 @@
 # Data directories
-data/raw/
-data/interim/
-data/final/
-data/product/
+data/
 
 # Python
 .venv/
