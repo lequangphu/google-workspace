@@ -6,7 +6,7 @@ Legacy scripts are being refactored into raw source modules for better organizat
 
 | Current Script | Target Module | Target File | Status |
 |---|---|---|---|
-| `ingest.py` | `src/modules/` | `ingest.py` + `google_api.py` | ✅ Migrated |
+| `ingest.py` | `src/modules/` | `ingest.py` + `google_api.py` | ✅ **Migrated** (b7a22c2) - Multi-sheet support, rate limiting |
 | `clean_chung_tu_nhap.py` | `import_export_receipts` | `clean_receipts_purchase.py` | Pending |
 | `clean_chung_tu_xuat.py` | `import_export_receipts` | `clean_receipts_sale.py` | Pending |
 | `clean_xuat_nhap_ton.py` | `import_export_receipts` | `clean_inventory.py` | Pending |
