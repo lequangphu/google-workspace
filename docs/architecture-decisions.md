@@ -70,20 +70,26 @@ data/03-erp-export/    ← Final, validated outputs only
 - **Modularity**: related tasks (clean + extract) naturally belong together
 - **Maintainability**: easier to understand each module's responsibility
 
-**Example**:
+**Example** (sheet names and ingest structure):
 ```
+ingest.py configuration:
+- import_export_receipts: Sheets CT.NHAP, CT.XUAT, XNT (multiple year/month files)
+- receivable: Sheets TỔNG CÔNG NỢ, Thong tin KH → receivable_summary.csv, receivable_customers.csv
+- payable: Sheets MÃ CTY, TỔNG HỢP → payable_master.csv, payable_summary.csv
+- cashflow: Sheets Tiền gửi, Tien mat → cashflow_deposits.csv, cashflow_cash.csv
+
 src/modules/
-├── import_export_receipts/  # Raw source: XUẤT NHẬP TỒN TỔNG T*
+├── import_export_receipts/  # Raw source: XUẤT NHẬP TỒN TỔNG T* (multiple sheets)
 │   ├── clean_receipts_purchase.py
 │   ├── clean_receipts_sale.py
 │   ├── clean_inventory.py
 │   └── extract_products.py
-├── receivable/              # Raw source: CONG NO HANG NGAY
+├── receivable/              # Raw source: TỔNG CÔNG NỢ + Thong tin KH
 │   ├── clean_customers.py
 │   └── extract_customer_ids.py
-├── payable/                 # Raw source: BC CÔNG NỢ NCC
+├── payable/                 # Raw source: MÃ CTY + TỔNG HỢP
 │   └── extract_suppliers.py
-└── cashflow/                # Raw source: SỔ QUỸ TIỀN MẶT
+└── cashflow/                # Raw source: Tiền gửi + Tien mat
     └── transform.py
 ```
 

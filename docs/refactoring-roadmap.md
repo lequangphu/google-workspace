@@ -6,6 +6,7 @@ Legacy scripts are being refactored into raw source modules for better organizat
 
 | Current Script | Target Module | Target File | Status |
 |---|---|---|---|
+| `ingest.py` | `src/modules/` | `ingest.py` + `google_api.py` | ✅ Migrated |
 | `clean_chung_tu_nhap.py` | `import_export_receipts` | `clean_receipts_purchase.py` | Pending |
 | `clean_chung_tu_xuat.py` | `import_export_receipts` | `clean_receipts_sale.py` | Pending |
 | `clean_xuat_nhap_ton.py` | `import_export_receipts` | `clean_inventory.py` | Pending |
@@ -14,7 +15,6 @@ Legacy scripts are being refactored into raw source modules for better organizat
 | `generate_new_customer_id.py` | `receivable` | `extract_customer_ids.py` | Pending |
 | `clean_tong_no.py` | `receivable` | (deprecated, analyze usage) | Pending |
 | `pipeline.py` | `src/pipeline/` | `orchestrator.py` | Pending |
-| `ingest.py` | `src/modules/` | `ingest.py` | Pending |
 
 ## Pipeline Flow (ingest → transform by raw source → validate → export)
 

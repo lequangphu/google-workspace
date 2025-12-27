@@ -1,4 +1,10 @@
-"""Ingest Google Sheets data to raw CSV files."""
+"""DEPRECATED: Ingest Google Sheets data to raw CSV files.
+
+This legacy script has been migrated to src/modules/ingest.py.
+Use `from src.modules.ingest import ingest_from_drive` instead.
+
+See docs/refactoring-roadmap.md for migration details.
+"""
 
 import csv
 import logging

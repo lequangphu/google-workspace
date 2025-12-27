@@ -125,6 +125,11 @@ uv run ruff check src/
 - Contains: Nhóm hàng, Thương hiệu
 - Used by: `extract_products.py`
 
+**Data folder structure** (ingest → transform → validate → export):
+- See `data/README.md` for staging pattern + folder organization
+- Never write directly to `data/03-erp-export/`
+- Use `DataLineage` class to track every row through pipeline
+
 ---
 
 **For detailed reference** (KiotViet columns, git workflow, ADRs), see `docs/` folder.
