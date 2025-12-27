@@ -45,7 +45,7 @@ Based on existing scripts.
 | SỔ QUỸ TIỀN MẶT | CashFlow | (planned) | — | (n/a) |
 
 ### Export: write transformed data to Excel (.xlsx) files
-Restructure and write transformed data to Excel (.xlsx) files in /data/02-transformed/. The files structure must strictly follow the templates of KiotViet modules stored in /data/templates/.
+Restructure and write transformed data to Excel (.xlsx) files in /data/03-erp-export/. The files structure must strictly follow the templates of KiotViet modules stored in /data/templates/.
 
 Modules and templates path:
 1. Products: /Users/phu/repos/google-workspace/data/templates/MauFileSanPham.xlsx

@@ -1,86 +1,130 @@
-# AGENTS.md (/python)
+# AGENTS.md – Critical Rules for AI Coding Agents
 
-## Overview
-Python scripts for data processing and analysis in Google Workspace workflows.
+**Updated**: December 2025  
+**Context**: ~120k tokens → use economically. Load only files you need.
 
-## Requirements
-- Python 3.10+
-- uv (install: `curl -LsSf https://astral.sh/uv/install.sh | sh`)
+## 1. Absolute Rules – Failure if broken
 
-## Python Tooling
-
-Always use `uv` for package management:
-- `uv add <package>` - Add dependencies to pyproject.toml
-- `uv sync` - Install from pyproject.toml
-- `uv run <script.py>` - Run scripts in the project environment
-- `uv venv` - Create virtual environments
-
-Do NOT use `pip install` or `poetry`.
-
-## Setup
-```bash
-uv sync  # Install project dependencies
-```
-
-## Running Scripts
-**Always use `uv run` to execute any Python script.** Never use `python` directly.
+### Tooling – ONLY these commands
 
 ```bash
-uv run script_name.py
+uv run script.py              # ✅ CORRECT
+uv run pytest tests/          # ✅ CORRECT
+uv add package_name          # ✅ CORRECT
+uv sync                       # ✅ CORRECT
+
+python, pip, poetry           # ❌ FORBIDDEN
+pip install, poetry add/run   # ❌ FORBIDDEN
 ```
 
-## Scripts
+### Module organization – mandatory
 
-### ingest.py
-Downloads data from Google Sheets to `/data/raw/` directory.
-- Uses Google Drive API to find and download spreadsheets
-- Extracts specified sheet tabs (CT.NHAP, CT.XUAT, XNT)
-- Compares remote modified times to skip unchanged files
-- Run: `uv run pipeline.py --step ingest`
+- Group by **raw data source** (never by processing phase)
+- Raw sources: `import_export_receipts` / `receivable` / `payable` / `cashflow`
+- Each `.py` file **< 300 lines** (strong safety preference)
+- Test file per module: `tests/test_<raw_source>_<script>.py`
 
-### clean_chung_tu_nhap.py
-Cleans import receipt (Chứng từ nhập) data.
-- Combines multi-level headers
-- Parses and validates dates
-- Standardizes columns and data types
-- Outputs to `/data/final/`
-- Run: `uv run clean_chung_tu_nhap.py`
+### Naming – must follow
 
-### clean_chung_tu_xuat.py
-Cleans export receipt (Chứng từ xuất) data.
-- Handles different header patterns
-- Processes dates and year/month validation
-- Standardizes columns and data types
-- Outputs to `/data/final/`
-- Run: `uv run clean_chung_tu_xuat.py`
+| What | Pattern | Example |
+|------|---------|---------|
+| Functions & files | snake_case | `clean_receipts_purchase.py`, `extract_products()` |
+| Classes | PascalCase | `ERPTemplate`, `DataValidator` |
+| KiotViet columns | Exact Vietnamese, case-sensitive | "Mã hàng", "Tên hàng", "Nhóm hàng(3 Cấp)" |
+| Config keys | snake_case | `erp_export`, `bundle_modules` |
 
-### clean_xuat_nhap_ton.py
-Cleans inventory (Xuất nhập tồn) data.
-- Processes inventory movement data
-- Calculates profit margins
-- Drops empty inventory rows
-- Outputs to `/data/final/`
-- Run: `uv run clean_xuat_nhap_ton.py`
+### Dangerous mistakes – NEVER do
 
-### pipeline.py
-Orchestrates the full data pipeline with conditional execution.
+- ❌ Hardcode paths/IDs/periods → only from `pipeline.toml`
+- ❌ Skip row tracking → **every row must have lineage entry** (success or rejection)
+- ❌ Write directly to `data/03-erp-export/` → always: staging → validate → promote
+- ❌ Test on mock data → **only real CSV files from `/data/00-raw/`**
+- ❌ Create new `.md` files (except in `docs/`)
+- ❌ Silently skip errors → always log reason
 
-**Full Pipeline** (ingest → clean → upload):
+### File creation rules
+
+- **Allowed**: Update AGENTS.md, create files in `docs/`, add/modify src/tests files
+- **Not allowed**: Create `.md` files outside `docs/`; this keeps knowledge modular
+
+## 2. Quick Reminders (most frequent)
+
+**Transformations**:
+- Use `DataLineage` class to track every row
+- Validate before export: `ERPTemplateRegistry.validate_dataframe()`
+- Use `pathlib.Path` (not strings)
+
+**Logging**:
+- Log at every major step with separator: `logger.info("=" * 70)`
+- Never silently fail
+
+**Testing**:
+- Before commit: `uv run pytest tests/ -v`
+- Always test on real data from `/data/00-raw/`
+
+## 3. Architecture Overview (ultra-brief)
+
+**Pipeline flow**: Ingest (Google Drive) → Transform (by raw source) → Validate → Export XLSX
+
+**Module structure**:
+```
+src/modules/
+├── import_export_receipts/   # Products, PriceBook
+├── receivable/               # Customers
+├── payable/                  # Suppliers
+└── cashflow/                 # Reporting (future)
+```
+
+**Data folders**:
+- `data/00-raw/` ← Downloaded CSVs
+- `data/01-staging/` ← Versioned transforms
+- `data/02-validated/` ← Ready for export
+- `data/03-erp-export/` ← Final XLSX only
+
+## 4. Recommended Reading Order
+
+1. **This file** (AGENTS.md) for rules
+2. **project-description.md** for business context + raw sources
+3. **docs/erp-mapping.md** for KiotViet column details (when needed)
+4. **docs/development-workflow.md** for git/commits (when committing)
+5. **docs/refactoring-roadmap.md** for migration status (rarely needed)
+6. **docs/architecture-decisions.md** for design rationales (rarely needed)
+
+## 5. Common Tasks (Quick Start)
+
+### Run full pipeline
 ```bash
-uv run pipeline.py --full
+uv run src/cli.py
 ```
-Or simply: `uv run pipeline.py`
 
-**Individual Steps**:
-- Ingest only: `uv run pipeline.py --step ingest`
-- Clean only: `uv run pipeline.py --step clean`
-- Upload only: `uv run pipeline.py --step upload`
+### Run tests
+```bash
+uv run pytest tests/ -v                                      # All
+uv run pytest tests/test_import_export_receipts_*.py -v     # One module
+```
 
-**Workflow**:
-1. **Ingest**: Downloads from Google Sheets to `/data/raw/`
-2. **Clean**: Runs all three cleaners IF:
-   - `/data/final/` doesn't exist, OR
-   - Raw files are newer than final files
-3. **Upload**: Uploads final files to Google Drive IF clean succeeded
-   - Replaces existing files in destination folder
-   - Upload destination: https://drive.google.com/drive/folders/1crSQgdCZdrI5EwE1zf7soYX4xgjTM6G5
+### Format & lint before commit
+```bash
+uv run pytest tests/ -v
+uv run ruff format src/ tests/
+uv run ruff check src/
+```
+
+### Refactor legacy script to new module
+1. Create `src/modules/<raw_source>/<script>.py`
+2. Create matching test file
+3. Pass all tests
+4. Mark old script as deprecated
+5. Commit with clear message (see docs/development-workflow.md)
+
+## 6. External Data Sources (critical)
+
+**Product lookup** (enrichment):
+- URL: https://docs.google.com/spreadsheets/d/16bGN2gjWspCqlFD4xB--7WtkYtTpDaWzRQx9sV97ed8/edit?gid=23224859
+- Spreadsheet ID: `16bGN2gjWspCqlFD4xB--7WtkYtTpDaWzRQx9sV97ed8`
+- Contains: Nhóm hàng, Thương hiệu
+- Used by: `extract_products.py`
+
+---
+
+**For detailed reference** (KiotViet columns, git workflow, ADRs), see `docs/` folder.
