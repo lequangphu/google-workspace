@@ -662,7 +662,7 @@ def main():
     )
     parser.add_argument(
         "--step",
-        choices=["ingest", "transform", "upload"],
+        choices=["ingest", "transform", "upload", "export"],
         help="Run a specific step only",
     )
     parser.add_argument(
@@ -670,6 +670,18 @@ def main():
         action="store_true",
         default=False,
         help="Run full pipeline (default if no step specified)",
+    )
+    parser.add_argument(
+        "--resources",
+        type=str,
+        help="Comma-separated list of raw sources to process (import_export_receipts,receivable,payable,cashflow). "
+        "Default: all sources",
+    )
+    parser.add_argument(
+        "--products-only",
+        action="store_true",
+        default=False,
+        help="Only run ingest & export steps for Products.xlsx (skip transform & upload)",
     )
 
     args = parser.parse_args()
@@ -682,12 +694,24 @@ def main():
     DATA_FINAL_DIR.mkdir(parents=True, exist_ok=True)
     DATA_PRODUCT_DIR.mkdir(parents=True, exist_ok=True)
 
-    if args.step == "ingest":
+    # Store resource filter in environment if provided
+    if args.resources:
+        os.environ["PIPELINE_RESOURCES"] = args.resources
+
+    # Handle products-only shortcut
+    if args.products_only:
+        logger.info("\n" + "=" * 70)
+        logger.info("PRODUCTS-ONLY MODE: Ingest → Export Products.xlsx")
+        logger.info("=" * 70 + "\n")
+        success = step_ingest() and step_export_erp()
+    elif args.step == "ingest":
         success = step_ingest()
     elif args.step == "transform":
         success = step_transform()
     elif args.step == "upload":
         success = step_upload()
+    elif args.step == "export":
+        success = step_export_erp()
     else:
         success = run_full_pipeline()
 

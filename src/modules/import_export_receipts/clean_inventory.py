@@ -495,6 +495,70 @@ def format_columns(final_df: pd.DataFrame) -> pd.DataFrame:
     return final_df
 
 
+def detect_inventory_adjustments(final_df: pd.DataFrame) -> pd.DataFrame:
+    """Detect manual adjustments in beginning inventory.
+
+    Identifies rows where "Số lượng đầu kỳ" differs from the previous month's 
+    "Số lượng cuối kỳ", indicating manual adjustments.
+
+    Args:
+        final_df: Final processed inventory DataFrame
+
+    Returns:
+        DataFrame containing only rows with detected adjustments
+    """
+    if "Mã hàng" not in final_df.columns or "Số lượng đầu kỳ" not in final_df.columns:
+        logger.warning(
+            "Cannot detect adjustments: missing 'Mã hàng' or 'Số lượng đầu kỳ' column"
+        )
+        return pd.DataFrame()
+
+    # Ensure numeric types
+    final_df = final_df.copy()
+    final_df["Số lượng đầu kỳ"] = pd.to_numeric(
+        final_df["Số lượng đầu kỳ"], errors="coerce"
+    )
+    final_df["Số lượng cuối kỳ"] = pd.to_numeric(
+        final_df["Số lượng cuối kỳ"], errors="coerce"
+    )
+
+    # Sort by product and date to establish sequence
+    if "Ngày" in final_df.columns:
+        final_df = final_df.sort_values(
+            by=["Mã hàng", "Ngày"], na_position="last"
+        ).reset_index(drop=True)
+
+    adjustments = []
+
+    # Group by product
+    for product_code, group in final_df.groupby("Mã hàng", dropna=False):
+        group = group.reset_index(drop=True)
+
+        # Compare beginning of current month with end of previous month
+        for i in range(1, len(group)):
+            current_beginning = group.loc[i, "Số lượng đầu kỳ"]
+            prev_ending = group.loc[i - 1, "Số lượng cuối kỳ"]
+
+            # Check if both values exist and are different
+            if (
+                pd.notna(current_beginning)
+                and pd.notna(prev_ending)
+                and current_beginning != prev_ending
+            ):
+                adjustment_row = group.loc[i].copy()
+                adjustment_row["Điều chỉnh"] = current_beginning - prev_ending
+                adjustment_row["Số lượng cuối kỳ tháng trước"] = prev_ending
+                adjustments.append(adjustment_row)
+
+    if adjustments:
+        adjustments_df = pd.DataFrame(adjustments)
+        logger.info(f"Detected {len(adjustments_df)} inventory adjustments")
+        return adjustments_df
+    else:
+        logger.info("No inventory adjustments detected")
+        return pd.DataFrame()
+
+
 def process(
     input_dir: Path,
     staging_dir: Path,
@@ -563,6 +627,15 @@ def process(
         output_filepath = staging_dir / output_filename
         final_df.to_csv(output_filepath, index=False, encoding="utf-8")
         logger.info(f"Saved output to: {output_filepath}")
+
+        # Detect and export inventory adjustments
+        adjustments_df = detect_inventory_adjustments(final_df)
+        if not adjustments_df.empty:
+            # Use same naming pattern with "_adjustments" suffix
+            adjustments_filename = output_filename.replace(".csv", "_adjustments.csv")
+            adjustments_filepath = staging_dir / adjustments_filename
+            adjustments_df.to_csv(adjustments_filepath, index=False, encoding="utf-8")
+            logger.info(f"Saved {len(adjustments_df)} adjustments to: {adjustments_filepath}")
 
         # Print quality report
         logger.info("=" * 70)
