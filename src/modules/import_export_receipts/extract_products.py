@@ -7,6 +7,7 @@ This module processes cleaned import and export receipt data to generate:
 3. Inventory: Calculates stock levels using FIFO costing
 4. Prices: First and last buying/selling prices
 5. Gross profit: Revenue, COGS, and profit margin by product
+6. Enrichment: Fetches Nhóm hàng and Thương hiệu from external Google Sheets
 
 Raw sources: clean_receipts_purchase, clean_receipts_sale
 Module: import_export_receipts
@@ -19,6 +20,11 @@ from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
+# Add parent directory to path for imports
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -27,8 +33,8 @@ CONFIG = {
     "staging_dir": Path.cwd() / "data" / "01-staging" / "import_export",
     "validated_dir": Path.cwd() / "data" / "02-validated",
     "report_dir": Path.cwd() / "data" / "reports",
-    "nhap_pattern": "chi_tiet_nhap*.csv",
-    "xuat_pattern": "chi_tiet_xuat*.csv",
+    "nhap_pattern": "*nhập*.csv",
+    "xuat_pattern": "*xuất*.csv",
     "product_file": "product_info.csv",
     "nhap_summary_file": "summary_purchase.csv",
     "xuat_summary_file": "summary_sale.csv",
@@ -36,6 +42,10 @@ CONFIG = {
     "nhap_price_file": "price_purchase.csv",
     "xuat_price_file": "price_sale.csv",
     "gross_profit_file": "gross_profit.csv",
+    "enrichment_file": "enrichment.csv",
+    # Google Sheets product lookup (external data source)
+    "product_lookup_spreadsheet_id": "16bGN2gjWspCqlFD4xB--7WtkYtTpDaWzRQx9sV97ed8",
+    "product_lookup_sheet_name": "Nhóm hàng, thương hiệu",
 }
 
 # ============================================================================
@@ -196,6 +206,106 @@ def get_sort_key(group: pd.DataFrame) -> Tuple:
     thanh_tien = float(first_row.get("Thành tiền", 0) or 0)
 
     return (date_val, ma_chung_tu, thanh_tien)
+
+
+def fetch_product_lookup() -> pd.DataFrame:
+    """Fetch product lookup data from Google Sheets.
+
+    Loads Mã hàng, Nhóm hàng(3 Cấp), and Thương hiệu from external Google Sheets.
+
+    Returns:
+        DataFrame with columns: Mã hàng, Nhóm hàng(3 Cấp), Thương hiệu
+        Returns empty DataFrame if fetch fails
+    """
+    try:
+        from google_api import connect_to_drive, read_sheet_data
+    except ImportError:
+        logger.error("Cannot import google_api. Skipping product lookup enrichment.")
+        return pd.DataFrame()
+
+    try:
+        logger.info("Fetching product lookup from Google Sheets...")
+        drive_service, sheets_service = connect_to_drive()
+
+        spreadsheet_id = CONFIG["product_lookup_spreadsheet_id"]
+        sheet_name = CONFIG["product_lookup_sheet_name"]
+
+        # Read data from sheet
+        values = read_sheet_data(sheets_service, spreadsheet_id, sheet_name)
+
+        if not values or len(values) < 2:
+            logger.warning("Product lookup sheet is empty or has no data")
+            return pd.DataFrame()
+
+        # First row is header
+        headers = values[0]
+        data_rows = values[1:]
+
+        # Create DataFrame
+        lookup_df = pd.DataFrame(data_rows, columns=headers)
+
+        # Ensure required columns exist
+        required_cols = ["Mã hàng", "Nhóm hàng(3 Cấp)", "Thương hiệu"]
+        missing_cols = [col for col in required_cols if col not in lookup_df.columns]
+
+        if missing_cols:
+            logger.error(f"Product lookup missing columns: {missing_cols}")
+            return pd.DataFrame()
+
+        # Clean data: strip whitespace, handle empty values
+        for col in required_cols:
+            lookup_df[col] = lookup_df[col].astype(str).str.strip()
+            lookup_df.loc[lookup_df[col].isin(["", "None"]), col] = ""
+
+        # Remove duplicate Mã hàng, keep first occurrence
+        lookup_df = lookup_df.drop_duplicates(subset=["Mã hàng"], keep="first")
+
+        logger.info(f"Fetched {len(lookup_df)} products from lookup")
+        return lookup_df
+
+    except Exception as e:
+        logger.error(f"Failed to fetch product lookup: {e}")
+        return pd.DataFrame()
+
+
+def enrich_product_data(
+    product_info_df: pd.DataFrame, lookup_df: pd.DataFrame
+) -> pd.DataFrame:
+    """Merge product info with lookup data to enrich Nhóm hàng and Thương hiệu.
+
+    Args:
+        product_info_df: DataFrame with Mã hàng mới, Mã hàng, Tên hàng
+        lookup_df: DataFrame with Mã hàng, Nhóm hàng(3 Cấp), Thương hiệu
+
+    Returns:
+        DataFrame with enriched columns, or product_info with placeholders if lookup fails
+    """
+    if lookup_df.empty:
+        logger.warning("Product lookup is empty, using placeholder values")
+        enrichment_df = product_info_df[["Mã hàng", "Tên hàng"]].copy()
+        enrichment_df["Nhóm hàng(3 Cấp)"] = "Chưa phân loại"
+        enrichment_df["Thương hiệu"] = "Chưa xác định"
+        return enrichment_df[["Mã hàng", "Nhóm hàng(3 Cấp)", "Thương hiệu"]]
+
+    # Merge on Mã hàng
+    enrichment_df = product_info_df[["Mã hàng"]].copy()
+    enrichment_df = enrichment_df.merge(
+        lookup_df[["Mã hàng", "Nhóm hàng(3 Cấp)", "Thương hiệu"]],
+        on="Mã hàng",
+        how="left",
+    )
+
+    # Fill missing values with placeholders
+    enrichment_df["Nhóm hàng(3 Cấp)"] = enrichment_df["Nhóm hàng(3 Cấp)"].fillna(
+        "Chưa phân loại"
+    )
+    enrichment_df["Thương hiệu"] = enrichment_df["Thương hiệu"].fillna("Chưa xác định")
+
+    matched = enrichment_df["Nhóm hàng(3 Cấp)"].ne("Chưa phân loại").sum()
+    total = len(enrichment_df)
+    logger.info(f"Enriched {matched}/{total} products with lookup data")
+
+    return enrichment_df[["Mã hàng", "Nhóm hàng(3 Cấp)", "Thương hiệu"]]
 
 
 def process_nhap_data(staging_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -883,6 +993,22 @@ def process(staging_dir: Optional[Path] = None) -> Optional[Path]:
             logger.info(f"  Columns: {', '.join(gross_profit_df.columns)}")
         else:
             logger.warning("No gross profit data generated")
+
+        # Step 16: Enrich with product lookup and save enrichment
+        logger.info("=" * 70)
+        logger.info("Creating product enrichment (Nhóm hàng, Thương hiệu)")
+        logger.info("=" * 70)
+
+        lookup_df = fetch_product_lookup()
+        enrichment_df = enrich_product_data(product_info_df, lookup_df)
+
+        if not enrichment_df.empty:
+            enrichment_path = output_dir / CONFIG["enrichment_file"]
+            enrichment_df.to_csv(enrichment_path, index=False, encoding="utf-8")
+            logger.info(f"Enrichment data saved to: {enrichment_path}")
+            logger.info(f"  Columns: {', '.join(enrichment_df.columns)}")
+        else:
+            logger.warning("No enrichment data generated")
 
         logger.info("=" * 70)
         logger.info("PRODUCT EXTRACTION COMPLETED SUCCESSFULLY")

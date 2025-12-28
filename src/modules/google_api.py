@@ -1,6 +1,7 @@
 """Google API utilities for Drive and Sheets services."""
 
 import csv
+import json
 import logging
 import re
 import time
@@ -15,6 +16,10 @@ from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
+# Manifest cache file location
+MANIFEST_PATH = Path("data/.drive_manifest.json")
+MANIFEST_CACHE_TTL_HOURS = 24  # Refresh folders older than 24 hours
+
 # Rate limiting: 60 requests per minute per user = 1 request per second max
 # Use 0.5s to stay safely under the limit while being faster
 API_CALL_DELAY = 0.5  # seconds
@@ -24,6 +29,97 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
 ]
+
+
+def load_manifest() -> dict:
+    """Load folder→sheets manifest from cache.
+
+    Returns:
+        Dict with structure: {"folders": {folder_id: {"scanned_at": iso_ts, "sheets": [...]}}}.
+    """
+    if MANIFEST_PATH.exists():
+        try:
+            with open(MANIFEST_PATH, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not load manifest: {e}")
+    return {"version": 1, "folders": {}}
+
+
+def save_manifest(manifest: dict) -> None:
+    """Save manifest to cache file.
+
+    Args:
+        manifest: Manifest dict to save.
+    """
+    try:
+        MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(MANIFEST_PATH, "w") as f:
+            json.dump(manifest, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not save manifest: {e}")
+
+
+def is_manifest_stale(scanned_at_iso: str) -> bool:
+    """Check if folder scan is older than cache TTL.
+
+    Args:
+        scanned_at_iso: ISO timestamp string from manifest.
+
+    Returns:
+        True if stale (should refresh), False if fresh.
+    """
+    try:
+        scanned_at = datetime.fromisoformat(scanned_at_iso.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        age_hours = (now - scanned_at).total_seconds() / 3600
+        return age_hours > MANIFEST_CACHE_TTL_HOURS
+    except Exception:
+        return True  # If unparseable, treat as stale
+
+
+def get_cached_sheets_for_folder(manifest: dict, folder_id: str) -> tuple:
+    """Get cached sheets for a folder if fresh, else None.
+
+    Args:
+        manifest: Manifest dict.
+        folder_id: ID of folder to query.
+
+    Returns:
+        Tuple of (sheets_list, is_fresh) or (None, False) if not cached/stale.
+    """
+    if folder_id not in manifest.get("folders", {}):
+        return None, False
+
+    folder_entry = manifest["folders"][folder_id]
+    if is_manifest_stale(folder_entry.get("scanned_at", "")):
+        return None, False
+
+    return folder_entry.get("sheets", []), True
+
+
+def update_manifest_for_folder(manifest: dict, folder_id: str, sheets: list) -> None:
+    """Update manifest with freshly scanned folder data.
+
+    Args:
+        manifest: Manifest dict to update (modified in place).
+        folder_id: ID of folder.
+        sheets: List of sheet dicts (id, name, modifiedTime).
+    """
+    if "folders" not in manifest:
+        manifest["folders"] = {}
+
+    manifest["folders"][folder_id] = {
+        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "sheets": sheets,
+    }
+
+
+def clear_manifest() -> None:
+    """Clear entire manifest cache (force full refresh on next run)."""
+    if MANIFEST_PATH.exists():
+        MANIFEST_PATH.unlink()
+        logger.info(f"Cleared manifest cache at {MANIFEST_PATH}")
 
 
 def authenticate_google():
@@ -101,7 +197,8 @@ def find_sheets_in_folder(drive_service, folder_id):
     """
     query = (
         f"'{folder_id}' in parents "
-        "and mimeType='application/vnd.google-apps.spreadsheet'"
+        "and mimeType='application/vnd.google-apps.spreadsheet' "
+        "and trashed=false"
     )
     try:
         results = (
@@ -235,6 +332,31 @@ def parse_file_metadata(file_name: str) -> tuple:
     return None, None
 
 
+def calculate_content_hash(csv_path: Path) -> str:
+    """Calculate SHA256 hash of CSV file content.
+
+    Args:
+        csv_path: Path to CSV file.
+
+    Returns:
+        Hex digest of SHA256 hash, or empty string if file doesn't exist.
+    """
+    import hashlib
+
+    if not csv_path.exists():
+        return ""
+
+    try:
+        sha256_hash = hashlib.sha256()
+        with open(csv_path, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+    except Exception as e:
+        logger.warning(f"Could not hash {csv_path}: {e}")
+        return ""
+
+
 def should_ingest_file(csv_path: Path, remote_modified_time: str) -> bool:
     """Check if remote file is newer than local CSV.
 
@@ -259,3 +381,41 @@ def should_ingest_file(csv_path: Path, remote_modified_time: str) -> bool:
     except Exception as e:
         logger.warning(f"Could not compare timestamps for {csv_path}: {e}")
         return False
+
+
+def should_ingest_import_export(
+    csv_path: Path, remote_modified_time: str, current_month: int, current_year: int
+) -> bool:
+    """Check if import/export file should be re-ingested.
+
+    Always re-ingest current month files. For other months, check if remote is newer.
+
+    Args:
+        csv_path: Path to local CSV file.
+        remote_modified_time: ISO 8601 timestamp from Google Drive.
+        current_month: Current month (1-12).
+        current_year: Current year (e.g., 2025).
+
+    Returns:
+        True if file should be re-ingested, False otherwise.
+    """
+    # Extract year and month from filename (e.g., "2025_01_CT.NHAP.csv")
+    try:
+        stem = csv_path.stem  # Remove .csv extension
+        parts = stem.split("_")
+        if len(parts) < 2:
+            return True
+
+        file_year = int(parts[0])
+        file_month = int(parts[1])
+
+        # Always re-ingest current month
+        if file_year == current_year and file_month == current_month:
+            logger.debug(f"Always re-ingest current month: {csv_path}")
+            return True
+
+        # For other months, check timestamp
+        return should_ingest_file(csv_path, remote_modified_time)
+    except Exception as e:
+        logger.warning(f"Could not parse filename {csv_path}: {e}")
+        return should_ingest_file(csv_path, remote_modified_time)

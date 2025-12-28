@@ -4,7 +4,7 @@ Legacy scripts are being refactored into raw source modules for better organizat
 
 ## Progress Summary
 
-**Completed**: 8 of 9 scripts (89%)
+**Completed**: 9 of 9 scripts (100%)
 - ✅ `ingest.py` (original migration)
 - ✅ `clean_chung_tu_nhap.py` (CT.NHAP)
 - ✅ `clean_chung_tu_xuat.py` (CT.XUAT)
@@ -15,8 +15,7 @@ Legacy scripts are being refactored into raw source modules for better organizat
 - ✅ `clean_tong_no.py` (Debt data)
 - ✅ `pipeline.py` (orchestrator)
 
-**Remaining**: 1 item
-- Data validation & integration testing
+**Status**: Full migration complete. All tests passing (153 passed, 1 skipped).
 
 ## Migration Mapping
 
@@ -78,15 +77,15 @@ Master data is extracted from transaction data and enriched with external lookup
 
 ## Test Coverage
 
-**Tests Created**: 101 unit and integration tests
-- ✅ `test_import_export_receipts_clean_receipts_purchase.py` (8 tests)
-- ✅ `test_import_export_receipts_clean_receipts_sale.py` (8 tests)
-- ✅ `test_import_export_receipts_clean_inventory.py` (8 tests)
-- ✅ `test_import_export_receipts_extract_products.py` (10 tests)
-- ✅ `test_receivable_clean_customers.py` (16 tests)
-- ✅ `test_receivable_extract_customer_ids.py` (23 tests)
-- ✅ `test_receivable_clean_debts.py` (19 tests)
-- ✅ `test_pipeline_orchestrator.py` (28 tests)
+**Tests Created**: 153 unit and integration tests (153 passed, 1 skipped)
+- ✅ `test_import_export_receipts_clean_receipts_purchase.py`
+- ✅ `test_import_export_receipts_clean_receipts_sale.py`
+- ✅ `test_import_export_receipts_clean_inventory.py`
+- ✅ `test_import_export_receipts_extract_products.py`
+- ✅ `test_receivable_clean_customers.py`
+- ✅ `test_receivable_extract_customer_ids.py`
+- ✅ `test_receivable_clean_debts.py`
+- ✅ `test_pipeline_orchestrator.py`
 
 **Real Data Validation**: All modules tested on actual CSV files
 - 67 XNT (inventory) files processed → 48,272 rows
@@ -103,15 +102,15 @@ See `docs/architecture-decisions.md` for detailed rationales behind:
 
 ## Legacy Files Reference
 
-Old scripts kept in root and legacy/ folder for reference during migration:
-- `clean_chung_tu_nhap.py`
-- `clean_chung_tu_xuat.py`
-- `clean_xuat_nhap_ton.py`
-- `generate_product_info.py`
-- `clean_thong_tin_khach_hang.py`
-- `generate_new_customer_id.py`
-- `clean_tong_no.py`
-- `pipeline.py`
-- `ingest.py`
+All legacy scripts have been migrated to the modular structure and removed from the root directory. Original implementations are available in git history for reference.
 
-Once migration is complete, these will be moved to `legacy/` folder with deprecation notices.
+**Migrated scripts** (now in `src/modules/` and `src/pipeline/`):
+- Legacy `clean_chung_tu_nhap.py` → `src/modules/import_export_receipts/clean_receipts_purchase.py`
+- Legacy `clean_chung_tu_xuat.py` → `src/modules/import_export_receipts/clean_receipts_sale.py`
+- Legacy `clean_xuat_nhap_ton.py` → `src/modules/import_export_receipts/clean_inventory.py`
+- Legacy `generate_product_info.py` → `src/modules/import_export_receipts/extract_products.py`
+- Legacy `clean_thong_tin_khach_hang.py` → `src/modules/receivable/clean_customers.py`
+- Legacy `generate_new_customer_id.py` → `src/modules/receivable/extract_customer_ids.py`
+- Legacy `clean_tong_no.py` → `src/modules/receivable/clean_debts.py`
+- Legacy `pipeline.py` → `src/pipeline/orchestrator.py`
+- Legacy `ingest.py` → `src/modules/ingest.py`

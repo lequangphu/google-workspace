@@ -9,18 +9,24 @@ Handles 4 raw sources from project_description.md:
 
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 from src.modules.google_api import (
+    clear_manifest,
     connect_to_drive,
     export_tab_to_csv,
     find_sheets_in_folder,
     find_year_folders,
+    get_cached_sheets_for_folder,
     get_sheet_tabs,
+    load_manifest,
     parse_file_metadata,
     read_sheet_data,
-    should_ingest_file,
+    save_manifest,
+    should_ingest_import_export,
+    update_manifest_for_folder,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,14 +36,15 @@ RAW_DATA_DIR = Path("data/00-raw")
 
 # Raw data sources configuration from project_description.md
 # Folder IDs extracted from shared folder URLs (project_description.md lines 8-14)
+# Note: Folder 7 is scanned first as it contains the most recent/active import_export sheets
 IMPORT_EXPORT_FOLDER_IDS = [
-    "1RbkY2dd1IaqSHhnivjh6iejKv9mpkSJ_",  # Folder 1
-    "1ZJY7aJ-eRdoqYA1NE9ByfHeiYnxq1cFZ",  # Folder 2
-    "1p4XXU0nOsJc2Rr2_vJa3YluqmjPtzWRo",  # Folder 3
-    "1SYlk8Uztzd8asEZp6SK1yfF-EL0-t_sc",  # Folder 4
-    "1Q2-P4aeJfKEVuT69akFHcgrxMsB2mrrU",  # Folder 5
-    "1QIP6LCr6lANzzRnAZPmVg7wIWdUmhs6q",  # Folder 6
     "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj",  # Folder 7 (also has receivable, payable, cashflow)
+    "1Q2-P4aeJfKEVuT69akFHcgrxMsB2mrrU",  # Folder 5
+    "1SYlk8Uztzd8asEZp6SK1yfF-EL0-t_sc",  # Folder 4
+    "1p4XXU0nOsJc2Rr2_vJa3YluqmjPtzWRo",  # Folder 3
+    "1ZJY7aJ-eRdoqYA1NE9ByfHeiYnxq1cFZ",  # Folder 2
+    "1QIP6LCr6lANzzRnAZPmVg7wIWdUmhs6q",  # Folder 6
+    "1RbkY2dd1IaqSHhnivjh6iejKv9mpkSJ_",  # Folder 1
 ]
 
 RAW_SOURCES = {
@@ -155,6 +162,15 @@ def ingest_from_drive(
 
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Load manifest cache for folder→sheets lookups
+    manifest = load_manifest()
+    api_calls_saved = 0
+
+    # Get current month/year for import_export decision logic
+    now = datetime.now()
+    current_month = now.month
+    current_year = now.year
+
     files_ingested = 0
 
     # Process import_export_receipts (folder-based, multiple files/tabs)
@@ -168,10 +184,21 @@ def ingest_from_drive(
         desired_tabs = RAW_SOURCES["import_export_receipts"]["tabs"]
 
         def process_sheets_from_folder(folder_id, source_name):
-            """Process all sheets in a folder."""
-            nonlocal files_ingested, tabs_processed
+            """Process all sheets in a folder, using manifest cache when available."""
+            nonlocal files_ingested, tabs_processed, api_calls_saved
 
-            sheets = find_sheets_in_folder(drive_service, folder_id)
+            # Try to get cached sheets first
+            cached_sheets, is_fresh = get_cached_sheets_for_folder(manifest, folder_id)
+            if cached_sheets is not None:
+                sheets = cached_sheets
+                api_calls_saved += 1
+                logger.debug(f"{source_name}: Using cached sheets (saved 1 API call)")
+            else:
+                # Not cached or stale, fetch from Drive
+                sheets = find_sheets_in_folder(drive_service, folder_id)
+                if sheets:
+                    update_manifest_for_folder(manifest, folder_id, sheets)
+
             if not sheets:
                 logger.debug(f"No sheets found in {source_name}")
                 return False
@@ -196,7 +223,9 @@ def ingest_from_drive(
                         RAW_DATA_DIR / "import_export" / f"{year_num}_{month}_{tab}.csv"
                     )
 
-                    if not should_ingest_file(csv_path, remote_modified_time):
+                    if not should_ingest_import_export(
+                        csv_path, remote_modified_time, current_month, current_year
+                    ):
                         continue
 
                     if export_tab_to_csv(sheets_service, file_id, tab, csv_path):
@@ -259,10 +288,17 @@ def ingest_from_drive(
                 ):
                     files_ingested += 1
 
+    # Save updated manifest for next run
+    save_manifest(manifest)
+
     logger.info("=" * 70)
     logger.info(
         f"Ingestion complete: {files_ingested} files from {len(sources)} sources"
     )
+    if api_calls_saved > 0:
+        logger.info(
+            f"Cache efficiency: Saved {api_calls_saved} API calls using manifest"
+        )
 
     return files_ingested
 
@@ -273,4 +309,11 @@ if __name__ == "__main__":
         format="%(levelname)-8s %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
+
+    # Parse command line arguments for debugging/admin tasks
+    if len(sys.argv) > 1 and sys.argv[1] == "--clear-cache":
+        logger.info("Clearing manifest cache...")
+        clear_manifest()
+        sys.exit(0)
+
     ingest_from_drive(test_mode=False, clean_up=False)

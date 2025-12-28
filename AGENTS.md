@@ -86,10 +86,12 @@ src/modules/
 
 1. **This file** (AGENTS.md) for rules
 2. **project-description.md** for business context + raw sources
-3. **docs/erp-mapping.md** for KiotViet column details (when needed)
-4. **docs/development-workflow.md** for git/commits (when committing)
-5. **docs/refactoring-roadmap.md** for migration status (rarely needed)
-6. **docs/architecture-decisions.md** for design rationales (rarely needed)
+3. **docs/pipeline-io.md** for complete input/output reference
+4. **docs/erp-mapping.md** for KiotViet column details (when needed)
+5. **docs/development-workflow.md** for git/commits (when committing)
+6. **docs/manifest-caching.md** for ingestion optimization (when tuning performance)
+7. **docs/refactoring-roadmap.md** for migration status (rarely needed)
+8. **docs/architecture-decisions.md** for design rationales (rarely needed)
 
 ## 5. Common Tasks (Quick Start)
 

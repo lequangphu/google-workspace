@@ -26,6 +26,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
+from src.erp.exporter import export_products_xlsx
+
 # === CONFIGURATION ===
 
 WORKSPACE_ROOT = Path(__file__).parent.parent.parent
@@ -433,6 +435,51 @@ def step_generate_product_info() -> bool:
         return False
 
 
+def step_export_erp() -> bool:
+    """Step 2.7: Export validated data to ERP XLSX files."""
+    logger.info("=" * 70)
+    logger.info("STEP 2.7: EXPORT ERP")
+    logger.info("=" * 70)
+
+    try:
+        # Check if required validated files exist
+        required_files = [
+            DATA_VALIDATED_DIR / "product_info.csv",
+            DATA_VALIDATED_DIR / "inventory.csv",
+            DATA_VALIDATED_DIR / "price_sale.csv",
+            DATA_VALIDATED_DIR / "enrichment.csv",
+        ]
+
+        missing_files = [f for f in required_files if not f.exists()]
+        if missing_files:
+            logger.warning(
+                f"Missing validated files: {[f.name for f in missing_files]}"
+            )
+            return False
+
+        # Create export directory
+        DATA_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Export Products XLSX
+        logger.info("Exporting Products...")
+        output_path, stats = export_products_xlsx(
+            product_info_path=DATA_VALIDATED_DIR / "product_info.csv",
+            inventory_path=DATA_VALIDATED_DIR / "inventory.csv",
+            price_sale_path=DATA_VALIDATED_DIR / "price_sale.csv",
+            enrichment_path=DATA_VALIDATED_DIR / "enrichment.csv",
+            output_path=DATA_EXPORT_DIR / "Products.xlsx",
+        )
+        logger.info(f"Exported {stats['products_exported']} products to {output_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"ERP export failed: {e}")
+        import traceback
+
+        logger.error(traceback.format_exc())
+        return False
+
+
 def step_upload() -> bool:
     """Step 3: Upload transformed and report files to respective target sheets."""
     logger.info("=" * 70)
@@ -583,6 +630,13 @@ def run_full_pipeline() -> bool:
             logger.error("Product info generation failed, but continuing to upload")
     else:
         logger.info("Skipping product info generation step")
+
+    # Step 2.7: Export ERP (conditional)
+    if transform_succeeded:
+        if not step_export_erp():
+            logger.error("ERP export failed, but continuing to upload")
+    else:
+        logger.info("Skipping ERP export step")
 
     # Step 3: Upload (conditional)
     if should_run_upload(transform_succeeded):
