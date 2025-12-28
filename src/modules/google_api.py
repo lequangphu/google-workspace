@@ -45,7 +45,7 @@ def authenticate_google():
         else:
             if not credentials_path.exists():
                 raise FileNotFoundError(
-                    f"credentials.json not found. "
+                    "credentials.json not found. "
                     "Please download it from Google Cloud Console."
                 )
             flow = InstalledAppFlow.from_client_secrets_file(
@@ -154,7 +154,7 @@ def read_sheet_data(sheets_service, spreadsheet_id, sheet_name):
     # Quote sheet name for proper parsing (handles spaces and special characters)
     # Use just sheet name in quotes - API will read all data
     quoted_range = f"'{sheet_name}'"
-    
+
     for attempt in range(max_retries):
         try:
             result = (
@@ -171,16 +171,18 @@ def read_sheet_data(sheets_service, spreadsheet_id, sheet_name):
             return result.get("values", [])
         except HttpError as e:
             if e.resp.status == 429:  # Rate limited
-                wait_time = 2 ** attempt  # 1s, 2s, 4s...
+                wait_time = 2**attempt  # 1s, 2s, 4s...
                 logger.warning(
                     f"Rate limited reading {sheet_name}, retrying in {wait_time}s "
                     f"(attempt {attempt + 1}/{max_retries})"
                 )
                 time.sleep(wait_time)
             else:
-                logger.error(f"Failed to read sheet {sheet_name} from {spreadsheet_id}: {e}")
+                logger.error(
+                    f"Failed to read sheet {sheet_name} from {spreadsheet_id}: {e}"
+                )
                 return []
-    
+
     logger.error(f"Failed to read sheet {sheet_name} after {max_retries} retries")
     return []
 

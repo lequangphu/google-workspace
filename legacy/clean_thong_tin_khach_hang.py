@@ -1,5 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Clean and transform customer information (Thông tin khách hàng).
+"""
+⚠️ DEPRECATED: This script has been migrated to src/modules/receivable/clean_customers.py
+
+Use the new module instead:
+    from src.modules.receivable.clean_customers import process
+
+This legacy file is kept for reference only.
+---
+
+Clean and transform customer information (Thông tin khách hàng).
 
 This script:
 1. Reads 'Thong tin KH' tab from source Google Sheets

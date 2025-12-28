@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
-"""Clean export receipt data (Chứng từ xuất) from CSV files.
+"""Clean sale receipt data (Chứng từ xuất) from CSV files.
+
+Module: import_export_receipts
+Raw source: XUẤT NHẬP TỒN TỔNG T* (CT.XUAT sheet from Google Drive)
+Pipeline stage: data/00-raw/ → data/01-staging/
+Output: Cleaned sale receipt details for Products/PriceBook extraction
 
 This script:
-1. Groups files by header structure (handles multiple patterns)
-2. Extracts and combines multi-level headers with uniqueness handling
-3. Parses dates and year/month from filename
-4. Validates dates against source metadata
+1. Loads CSV files with multi-level headers from data/00-raw/
+2. Groups files by header structure
+3. Extracts and combines headers with uniqueness handling
+4. Parses dates robustly (handles multiple formats, ambiguities)
 5. Calculates total quantity (bán lẻ + bán sì)
 6. Drops rows with zero/missing quantities
-7. Standardizes columns and exports cleaned data
+7. Standardizes columns and exports cleaned data to data/01-staging/
 """
 
 import logging
@@ -22,8 +27,10 @@ import pandas as pd
 # CONFIGURATION
 # ============================================================================
 
-DATA_DIR = Path.cwd() / "data" / "raw"
-OUTPUT_DIR = Path.cwd() / "data" / "cleaned"
+# Data folder paths (from data/README.md: ingest → staging)
+DATA_RAW_DIR = Path.cwd() / "data" / "00-raw" / "import_export"
+DATA_STAGING_DIR = Path.cwd() / "data" / "01-staging" / "import_export"
+
 FILE_PATTERN = "*CT.XUAT.csv"
 
 AUXILIARY_COLUMNS_TO_DROP = [
@@ -87,7 +94,7 @@ INTEGER_COLUMNS = ["Tháng", "Năm"]
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -193,7 +200,7 @@ def process_dates(
     df: pd.DataFrame, year: Optional[int], month: Optional[int]
 ) -> pd.DataFrame:
     """Parse and standardize the 'Ngày' date column.
-    
+
     Original XUAT logic: Try standard format first, fallback to day-only interpretation.
     This preserves original behavior while still fixing encoding issues.
     """
@@ -377,9 +384,13 @@ def process_groups(grouped_files: Dict) -> pd.DataFrame:
             combined_df.get("Bán sì", pd.Series(index=combined_df.index)),
             errors="coerce",
         ).fillna(0)
-        
+
         # Handle alternative pattern where quantity is combined (Số lượng_Bán sì)
-        if "Số lượng_Bán sì" in combined_df.columns and so_luong_ban_le.sum() == 0 and ban_si.sum() == 0:
+        if (
+            "Số lượng_Bán sì" in combined_df.columns
+            and so_luong_ban_le.sum() == 0
+            and ban_si.sum() == 0
+        ):
             so_luong_ban_si = pd.to_numeric(
                 combined_df.get("Số lượng_Bán sì", pd.Series(index=combined_df.index)),
                 errors="coerce",
@@ -414,11 +425,11 @@ def process_groups(grouped_files: Dict) -> pd.DataFrame:
 
 def fill_and_adjust_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Fill nulls and adjust quantities based on data patterns.
-    
+
     On rows with non-null 'Số lượng':
     - Fill null 'Đơn giá' and 'Thành tiền' with 0
     - Fill null 'Tên khách hàng' with 'KHÁCH LẺ'
-    
+
     On rows with positive 'Số lượng' and negative 'Đơn giá':
     - Make 'Số lượng' negative and 'Đơn giá' positive
     """
@@ -429,39 +440,35 @@ def fill_and_adjust_rows(df: pd.DataFrame) -> pd.DataFrame:
         df["Đơn giá"] = pd.to_numeric(df["Đơn giá"], errors="coerce")
     if "Thành tiền" in df.columns:
         df["Thành tiền"] = pd.to_numeric(df["Thành tiền"], errors="coerce")
-    
+
     # Rows with non-null Số lượng
     non_null_qty = df["Số lượng"].notna()
-    
+
     # Fill null Đơn giá and Thành tiền with 0
     if "Đơn giá" in df.columns:
         df.loc[non_null_qty & df["Đơn giá"].isna(), "Đơn giá"] = 0
     if "Thành tiền" in df.columns:
         df.loc[non_null_qty & df["Thành tiền"].isna(), "Thành tiền"] = 0
-    
+
     # Fill null Tên khách hàng with 'KHÁCH LẺ'
     if "Tên khách hàng" in df.columns:
-        df.loc[non_null_qty & df["Tên khách hàng"].isna(), "Tên khách hàng"] = "KHÁCH LẺ"
-    
+        df.loc[non_null_qty & df["Tên khách hàng"].isna(), "Tên khách hàng"] = (
+            "KHÁCH LẺ"
+        )
+
     # For rows with positive Số lượng and negative Đơn giá
     if "Số lượng" in df.columns and "Đơn giá" in df.columns:
-        pos_qty_neg_price = (
-            (df["Số lượng"] > 0) & 
-            (df["Đơn giá"] < 0)
-        )
+        pos_qty_neg_price = (df["Số lượng"] > 0) & (df["Đơn giá"] < 0)
         df.loc[pos_qty_neg_price, "Số lượng"] = -df.loc[pos_qty_neg_price, "Số lượng"]
         df.loc[pos_qty_neg_price, "Đơn giá"] = -df.loc[pos_qty_neg_price, "Đơn giá"]
-    
+
     return df
 
 
 def generate_output_filename(df: pd.DataFrame) -> str:
     """Generate filename from date range in data."""
     df["year_month_dt"] = pd.to_datetime(
-        df["Năm"].astype(str)
-        + "-"
-        + df["Tháng"].astype(str).str.zfill(2)
-        + "-01",
+        df["Năm"].astype(str) + "-" + df["Tháng"].astype(str).str.zfill(2) + "-01",
         errors="coerce",
     )
 
@@ -477,23 +484,42 @@ def generate_output_filename(df: pd.DataFrame) -> str:
 
     filename = f"Chi tiết xuất {first_year:04d}-{first_month:02d}_{last_year:04d}-{last_month:02d}.csv"
     df.drop(columns=["year_month_dt"], inplace=True, errors="ignore")
-    
+
     return filename
 
 
 # ============================================================================
-# MAIN EXECUTION
+# MAIN PIPELINE FUNCTION
 # ============================================================================
 
-def main() -> None:
-    """Main processing pipeline."""
-    logger.info("Starting export voucher (CT.XUAT) processing")
+
+def transform_sale_receipts(
+    input_dir: Optional[Path] = None, output_dir: Optional[Path] = None
+) -> Path:
+    """Transform sale receipt data from raw to staging.
+
+    Args:
+        input_dir: Path to raw directory (default: data/00-raw/import_export/)
+        output_dir: Path to staging directory (default: data/01-staging/import_export/)
+
+    Returns:
+        Path: Output file path
+    """
+    logger.info("=" * 70)
+    logger.info("Starting sale receipt (CT.XUAT) transformation")
+    logger.info("=" * 70)
+
+    # Use defaults if not provided
+    if input_dir is None:
+        input_dir = DATA_RAW_DIR
+    if output_dir is None:
+        output_dir = DATA_STAGING_DIR
 
     # Find all CSV files
-    csv_files = list(DATA_DIR.glob(FILE_PATTERN))
+    csv_files = list(input_dir.glob(FILE_PATTERN))
     if not csv_files:
-        logger.warning(f"No CSV files found in {DATA_DIR}")
-        return
+        logger.warning(f"No CSV files found matching {FILE_PATTERN} in {input_dir}")
+        return None
 
     logger.info(f"Found {len(csv_files)} CSV files")
 
@@ -512,7 +538,7 @@ def main() -> None:
     final_df = process_groups(grouped_files_by_header)
     if final_df.empty:
         logger.error("No data processed")
-        return
+        return None
 
     logger.info(f"Initial DataFrame shape: {final_df.shape}")
 
@@ -550,12 +576,14 @@ def main() -> None:
         final_df = final_df.drop(columns=["Ngày_dt"])
 
     # Save output
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_filepath = OUTPUT_DIR / output_filename
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_filepath = output_dir / output_filename
     final_df.to_csv(output_filepath, index=False, encoding="utf-8")
-    logger.info(f"Final processed DataFrame saved to: {output_filepath}")
+    logger.info(f"Saved to: {output_filepath}")
     logger.info(f"Rows: {len(final_df)}, Columns: {len(final_df.columns)}")
+
+    return output_filepath
 
 
 if __name__ == "__main__":
-    main()
+    transform_sale_receipts()

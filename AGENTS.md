@@ -41,6 +41,7 @@ pip install, poetry add/run   # ❌ FORBIDDEN
 - ❌ Test on mock data → **only real CSV files from `/data/00-raw/`**
 - ❌ Create new `.md` files (except in `docs/`)
 - ❌ Silently skip errors → always log reason
+- ❌ Migrate script without testing on raw data → **always run migrated script on real data before commit**
 
 ### File creation rules
 

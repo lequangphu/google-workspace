@@ -103,6 +103,7 @@ def ingest_direct_spreadsheet(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", newline="", encoding="utf-8") as f:
             import csv
+
             writer = csv.writer(f)
             writer.writerows(values)
         logger.info(f"Exported {output_path}")
@@ -159,7 +160,9 @@ def ingest_from_drive(
     # Process import_export_receipts (folder-based, multiple files/tabs)
     if "import_export_receipts" in sources:
         logger.info("=" * 70)
-        logger.info("Processing: import_export_receipts (7 shared folders + year folders)")
+        logger.info(
+            "Processing: import_export_receipts (7 shared folders + year folders)"
+        )
 
         tabs_processed = set()
         desired_tabs = RAW_SOURCES["import_export_receipts"]["tabs"]
@@ -202,13 +205,15 @@ def ingest_from_drive(
                         tabs_processed.add(tab)
 
                         if test_mode and len(tabs_processed) >= len(desired_tabs):
-                            logger.info(f"Test mode: Downloaded all tab types")
+                            logger.info("Test mode: Downloaded all tab types")
                             return True
 
             return False
 
         # Process all shared folders (folders 1-7 from project_description.md)
-        for idx, folder_id in enumerate(RAW_SOURCES["import_export_receipts"]["folder_ids"], 1):
+        for idx, folder_id in enumerate(
+            RAW_SOURCES["import_export_receipts"]["folder_ids"], 1
+        ):
             logger.info(f"Scanning shared folder {idx}...")
             if process_sheets_from_folder(folder_id, f"Shared folder {idx}"):
                 break

@@ -1,5 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Generate product information from cleaned import and export receipts.
+"""
+⚠️ DEPRECATED: This script has been migrated to src/modules/import_export_receipts/extract_products.py
+
+Use the new module instead:
+    from src.modules.import_export_receipts.extract_products import process
+
+This legacy file is kept for reference only.
+---
+
+Generate product information from cleaned import and export receipts.
 
 This script:
 1. Loads final output from clean_chung_tu_nhap.py
@@ -90,7 +99,7 @@ def get_longest_name(group: pd.DataFrame) -> str:
 
 def standardize_brand_names(df: pd.DataFrame) -> pd.DataFrame:
     """Standardize brand names in 'Tên hàng' column.
-    
+
     Case-insensitive matching with all-caps replacement:
     - CHENGSIN → CHENGSHIN
     - MICHENLIN → MICHELIN
@@ -101,15 +110,13 @@ def standardize_brand_names(df: pd.DataFrame) -> pd.DataFrame:
         "michenlin": "MICHELIN",
         "caosumina": "CASUMINA",
     }
-    
+
     df = df.copy()
-    
+
     for old, new in replacements.items():
         # Case-insensitive replacement using regex
-        df["Tên hàng"] = df["Tên hàng"].str.replace(
-            old, new, case=False, regex=False
-        )
-    
+        df["Tên hàng"] = df["Tên hàng"].str.replace(old, new, case=False, regex=False)
+
     return df
 
 
@@ -635,7 +642,7 @@ def process_gross_profit_data(
         cogs_fifo = 0
         if total_cost_nhap > 0:
             remaining_qty = max(0, total_qty_nhap - total_qty_sold)
-            
+
             if remaining_qty > 0:
                 # Calculate cost of remaining inventory using FIFO
                 fifo_info = calculate_fifo_cost(nhap_group, remaining_qty)

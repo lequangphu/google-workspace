@@ -7,14 +7,14 @@ These scripts have been migrated to the new modular structure in `src/modules/` 
 | Legacy Script | New Location | Status |
 |---|---|---|
 | `ingest.py` | `src/modules/ingest.py` + `src/modules/google_api.py` | ✅ Migrated |
-| `clean_chung_tu_nhap.py` | `src/modules/import_export_receipts/clean_receipts_purchase.py` | Pending |
-| `clean_chung_tu_xuat.py` | `src/modules/import_export_receipts/clean_receipts_sale.py` | Pending |
-| `clean_xuat_nhap_ton.py` | `src/modules/import_export_receipts/clean_inventory.py` | Pending |
-| `generate_product_info.py` | `src/modules/import_export_receipts/extract_products.py` | Pending |
-| `clean_thong_tin_khach_hang.py` | `src/modules/receivable/clean_customers.py` | Pending |
-| `generate_new_customer_id.py` | `src/modules/receivable/extract_customer_ids.py` | Pending |
-| `clean_tong_no.py` | `src/modules/receivable/` (deprecated, analyze usage) | Pending |
-| `pipeline.py` | `src/pipeline/orchestrator.py` | Pending |
+| `clean_chung_tu_nhap.py` | `src/modules/import_export_receipts/clean_receipts_purchase.py` | ✅ Migrated (T-019b5f16) |
+| `clean_chung_tu_xuat.py` | `src/modules/import_export_receipts/clean_receipts_sale.py` | ✅ Migrated (T-019b5f24) |
+| `clean_xuat_nhap_ton.py` | `src/modules/import_export_receipts/clean_inventory.py` | ✅ Migrated (T-019b5f24) |
+| `generate_product_info.py` | `src/modules/import_export_receipts/extract_products.py` | ✅ Migrated (T-019b5f24) |
+| `clean_thong_tin_khach_hang.py` | `src/modules/receivable/clean_customers.py` | ✅ Migrated (T-019b5f24) |
+| `generate_new_customer_id.py` | `src/modules/receivable/extract_customer_ids.py` | ⏳ Pending Migration |
+| `clean_tong_no.py` | `src/modules/receivable/` (deprecated, analyze usage) | ⏳ Pending Analysis |
+| `pipeline.py` | `src/pipeline/orchestrator.py` | ⏳ Pending Migration |
 
 ## Using Migrated Scripts
 

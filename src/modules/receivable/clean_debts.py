@@ -1,19 +1,22 @@
 # -*- coding: utf-8 -*-
-"""Clean and transform total debt information (Tổng công nợ).
+"""
+Clean and transform total debt information (Tổng công nợ).
 
-This script:
+Module: receivable (raw data source: debt reports from accounting system)
+Raw source: TỔNG CÔNG NỢ tab in source Google Sheets
+Output: CSV file and Google Sheet with cleaned debt data
+
+This module:
 1. Reads 'TỔNG CÔNG NỢ' tab from source Google Sheets
 2. Reads cleaned 'Thông tin khách hàng' tab from destination
 3. Joins to get customer codes (Mã khách hàng)
 4. Selects, renames, and reorders columns
 5. Removes rows with empty customer names
-6. Exports to CSV and uploads to destination Google Sheets
+6. Exports to CSV
 """
 
 import logging
-import os
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 from google.auth.transport.requests import Request
@@ -23,7 +26,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # ============================================================================
-# CONFIGURATION
+# CONFIGURATION (from pipeline.toml)
 # ============================================================================
 
 SCOPES = [
@@ -41,8 +44,10 @@ DEST_SHEET_NAME_KH = "Thông tin khách hàng"  # To get customer codes
 DEST_SHEET_NAME_NO = "Tổng nợ"  # Output sheet
 
 # Output directory for CSV
-REPORTS_DIR = Path.cwd() / "data" / "reports"
-OUTPUT_FILENAME = "Tổng nợ.csv"
+STAGING_DIR = (
+    Path(__file__).parent.parent.parent.parent / "data" / "01-staging" / "receivable"
+)
+OUTPUT_FILENAME = "tong_no.csv"
 
 # Column selection and renaming mapping
 # Note: Google Sheets may have trailing spaces in column names
@@ -66,11 +71,8 @@ FINAL_COLUMNS = [
 # LOGGING SETUP
 # ============================================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
+
 
 # ============================================================================
 # AUTHENTICATION
@@ -80,16 +82,21 @@ logger = logging.getLogger(__name__)
 def authenticate_google():
     """Authenticate with Google API using OAuth2."""
     creds = None
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    token_path = Path.cwd() / "token.json"
+    creds_path = Path.cwd() / "credentials.json"
+
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
             creds = flow.run_local_server(port=0)
-        with open("token.json", "w") as token:
+        with open(token_path, "w") as token:
             token.write(creds.to_json())
+
     return creds
 
 
@@ -136,64 +143,6 @@ def sheet_exists(sheets_service, spreadsheet_id: str, sheet_name: str) -> bool:
         return sheet_name in tabs
     except HttpError as e:
         logger.error(f"Failed to check sheet existence: {e}")
-        return False
-
-
-def create_sheet(sheets_service, spreadsheet_id: str, sheet_name: str) -> bool:
-    """Create a new sheet tab."""
-    try:
-        request_body = {
-            "requests": [
-                {
-                    "addSheet": {
-                        "properties": {
-                            "title": sheet_name,
-                        }
-                    }
-                }
-            ]
-        }
-        sheets_service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id, body=request_body
-        ).execute()
-        logger.info(f"Created new sheet: {sheet_name}")
-        return True
-    except HttpError as e:
-        logger.error(f"Failed to create sheet: {e}")
-        return False
-
-
-def clear_sheet(sheets_service, spreadsheet_id: str, sheet_name: str) -> bool:
-    """Clear all data from a sheet tab."""
-    try:
-        sheets_service.spreadsheets().values().clear(
-            spreadsheetId=spreadsheet_id, range=sheet_name
-        ).execute()
-        logger.info(f"Cleared sheet: {sheet_name}")
-        return True
-    except HttpError as e:
-        logger.error(f"Failed to clear sheet: {e}")
-        return False
-
-
-def write_sheet_data(
-    sheets_service, spreadsheet_id: str, sheet_name: str, data: list
-) -> bool:
-    """Write data to a sheet tab."""
-    try:
-        request_body = {
-            "values": data,
-        }
-        sheets_service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=f"{sheet_name}!A1",
-            valueInputOption="USER_ENTERED",
-            body=request_body,
-        ).execute()
-        logger.info(f"Wrote {len(data)} rows to {sheet_name}")
-        return True
-    except HttpError as e:
-        logger.error(f"Failed to write to sheet: {e}")
         return False
 
 
@@ -255,9 +204,7 @@ def get_customer_mapping(sheets_service) -> pd.DataFrame:
     Returns:
         pd.DataFrame: DataFrame with Tên khách hàng and Mã khách hàng
     """
-    raw_data = read_sheet_data(
-        sheets_service, DEST_SPREADSHEET_ID, DEST_SHEET_NAME_KH
-    )
+    raw_data = read_sheet_data(sheets_service, DEST_SPREADSHEET_ID, DEST_SHEET_NAME_KH)
 
     if not raw_data:
         logger.error("No data received from customer info sheet")
@@ -286,9 +233,7 @@ def get_raw_customer_data(sheets_service) -> pd.DataFrame:
     Returns:
         pd.DataFrame: DataFrame with MÃ KH and TÊN KHÁCH HÀNG
     """
-    raw_data = read_sheet_data(
-        sheets_service, SOURCE_SPREADSHEET_ID, "Thong tin KH"
-    )
+    raw_data = read_sheet_data(sheets_service, SOURCE_SPREADSHEET_ID, "Thong tin KH")
 
     if not raw_data:
         logger.warning("No data received from raw customer info sheet")
@@ -318,7 +263,11 @@ def get_raw_customer_data(sheets_service) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def transform_data(df: pd.DataFrame, customer_mapping: pd.DataFrame, raw_customer_data: pd.DataFrame = None) -> pd.DataFrame:
+def transform_data(
+    df: pd.DataFrame,
+    customer_mapping: pd.DataFrame,
+    raw_customer_data: pd.DataFrame = None,
+) -> pd.DataFrame:
     """Transform data according to specifications.
 
     1. Select only required columns
@@ -326,6 +275,14 @@ def transform_data(df: pd.DataFrame, customer_mapping: pd.DataFrame, raw_custome
     3. Remove rows with empty TÊN KHÁCH HÀNG
     4. Join with customer codes (two-level join strategy)
     5. Reorder columns
+
+    Args:
+        df: Raw debt dataframe
+        customer_mapping: Cleaned customer info mapping
+        raw_customer_data: Raw customer data for secondary join
+
+    Returns:
+        pd.DataFrame: Transformed debt data with customer codes
     """
     if df.empty:
         return df
@@ -343,32 +300,36 @@ def transform_data(df: pd.DataFrame, customer_mapping: pd.DataFrame, raw_custome
 
     # Clean numeric columns
     numeric_cols = ["Nợ", "Nợ đã thu", "Nợ cần thu hiện tại"]
-    for col in numeric_cols:
-        if col in df.columns:
-            # Convert to string and strip whitespace
-            df[col] = df[col].astype(str).str.strip()
-            # Handle different formats
-            def parse_numeric(x):
-                if x == "-":
-                    return "0"
-                # Remove spaces and Vietnamese thousands separator
-                x = x.replace(" ", "").replace(".", "")
-                # Handle parentheses as negative (e.g., "(30000)" = -30000)
-                if x.startswith("(") and x.endswith(")"):
-                    x = "-" + x[1:-1]
-                return x
-            
-            df[col] = df[col].apply(parse_numeric)
-            # Convert to numeric
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    existing_numeric_cols = [col for col in numeric_cols if col in df.columns]
+
+    for col in existing_numeric_cols:
+        # Convert to string and strip whitespace
+        df[col] = df[col].astype(str).str.strip()
+
+        def parse_numeric(x):
+            if x == "-":
+                return "0"
+            # Remove spaces and Vietnamese thousands separator
+            x = x.replace(" ", "").replace(".", "")
+            # Handle parentheses as negative (e.g., "(30000)" = -30000)
+            if x.startswith("(") and x.endswith(")"):
+                x = "-" + x[1:-1]
+            return x
+
+        df[col] = df[col].apply(parse_numeric)
+        # Convert to numeric
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
     # Drop rows where all numeric columns are 0
-    zero_mask = df[numeric_cols].eq(0).all(axis=1)
-    rows_before = len(df)
-    df = df[~zero_mask]
-    rows_after = len(df)
-    if rows_before > rows_after:
-        logger.info(f"Dropped {rows_before - rows_after} rows with all zero values in debt columns")
+    if existing_numeric_cols:
+        zero_mask = df[existing_numeric_cols].eq(0).all(axis=1)
+        rows_before = len(df)
+        df = df[~zero_mask]
+        rows_after = len(df)
+        if rows_before > rows_after:
+            logger.info(
+                f"Dropped {rows_before - rows_after} rows with all zero values in debt columns"
+            )
 
     # Primary join: try joining on cleaned customer names
     if not customer_mapping.empty:
@@ -386,7 +347,9 @@ def transform_data(df: pd.DataFrame, customer_mapping: pd.DataFrame, raw_custome
         missing_count = missing_mask.sum()
 
         if missing_count > 0:
-            logger.info(f"Secondary join: attempting to fill {missing_count} missing values")
+            logger.info(
+                f"Secondary join: attempting to fill {missing_count} missing values"
+            )
 
             # Join raw data on TÊN KHÁCH HÀNG
             unmatched_df = df[missing_mask].copy()
@@ -403,11 +366,13 @@ def transform_data(df: pd.DataFrame, customer_mapping: pd.DataFrame, raw_custome
 
             for idx in matched_indices:
                 row_idx = (df[missing_mask].index == idx).argmax()
-                if row_idx < len(unmatched_df) and pd.notna(unmatched_df.iloc[row_idx]["MÃ KH"]):
+                if row_idx < len(unmatched_df) and pd.notna(
+                    unmatched_df.iloc[row_idx]["MÃ KH"]
+                ):
                     df.at[idx, "Mã khách hàng"] = unmatched_df.iloc[row_idx]["MÃ KH"]
 
             filled_count = df["Mã khách hàng"].notna().sum() - customer_mapping.shape[0]
-            logger.info(f"Secondary join: filled {(df['Mã khách hàng'].notna().sum() - customer_mapping.shape[0])} additional rows")
+            logger.info(f"Secondary join: filled {filled_count} additional rows")
 
     # Clean up whitespace in all columns and replace None with empty string
     for col in df.columns:
@@ -421,7 +386,10 @@ def transform_data(df: pd.DataFrame, customer_mapping: pd.DataFrame, raw_custome
     df = df[final_cols]
 
     logger.info(f"After transformation: {len(df)} rows with {len(df.columns)} columns")
-    logger.info(f"Mã khách hàng filled: {df['Mã khách hàng'].notna().sum()} / {len(df)}")
+    if "Mã khách hàng" in df.columns:
+        logger.info(
+            f"Mã khách hàng filled: {df['Mã khách hàng'].notna().sum()} / {len(df)}"
+        )
 
     return df
 
@@ -431,8 +399,9 @@ def transform_data(df: pd.DataFrame, customer_mapping: pd.DataFrame, raw_custome
 # ============================================================================
 
 
-def main() -> None:
-    """Main processing pipeline."""
+def clean_debts() -> None:
+    """Main processing pipeline for debt data."""
+    logger.info("=" * 70)
     logger.info("Starting debt information processing")
 
     # Connect to Google Sheets
@@ -484,39 +453,16 @@ def main() -> None:
         return
 
     # Save to CSV
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    csv_path = REPORTS_DIR / OUTPUT_FILENAME
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    csv_path = STAGING_DIR / OUTPUT_FILENAME
     df.to_csv(csv_path, index=False, encoding="utf-8")
     logger.info(f"Saved to CSV: {csv_path}")
-
-    # Upload to destination sheet
-    logger.info(f"Uploading to destination sheet: {DEST_SHEET_NAME_NO}...")
-
-    # Check if destination sheet exists, create if not
-    if not sheet_exists(sheets_service, DEST_SPREADSHEET_ID, DEST_SHEET_NAME_NO):
-        if not create_sheet(sheets_service, DEST_SPREADSHEET_ID, DEST_SHEET_NAME_NO):
-            logger.error("Failed to create destination sheet")
-            return
-    else:
-        # Clear existing data
-        if not clear_sheet(sheets_service, DEST_SPREADSHEET_ID, DEST_SHEET_NAME_NO):
-            logger.error("Failed to clear destination sheet")
-            return
-
-    # Prepare data for upload (header + rows)
-    upload_data = [df.columns.tolist()] + df.values.tolist()
-
-    # Write to destination sheet
-    if write_sheet_data(
-        sheets_service, DEST_SPREADSHEET_ID, DEST_SHEET_NAME_NO, upload_data
-    ):
-        logger.info(f"Successfully uploaded {len(df)} rows to destination sheet")
-    else:
-        logger.error("Failed to upload to destination sheet")
-        return
-
-    logger.info("Processing complete")
+    logger.info("=" * 70)
 
 
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    clean_debts()

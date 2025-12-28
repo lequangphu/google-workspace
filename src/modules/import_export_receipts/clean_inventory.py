@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Clean inventory data (Xuất Nhập Tồn) from CSV files.
+"""Clean inventory data (Xuất Nhập Tồn) from raw CSV files.
 
-This script:
+This module:
 1. Groups files by header structure
 2. Extracts and combines multi-level headers handling Vietnamese characters
 3. Loads data with year/month metadata from filename
@@ -10,6 +10,8 @@ This script:
 6. Converts numeric columns (handles comma-separated values)
 7. Calculates profit margin (Biên lãi gộp) from revenue and gross profit
 8. Standardizes columns and exports cleaned data
+
+Raw source: Inventory files (Xuất Nhập Tồn) from KiotViet
 """
 
 import csv
@@ -26,8 +28,6 @@ from tqdm import tqdm
 # ============================================================================
 
 CONFIG = {
-    "input_dir": Path.cwd() / "data" / "raw",
-    "output_dir": Path.cwd() / "data" / "cleaned",
     "file_pattern": r"(\d{4})_(\d{1,2})_XNT\.csv",
     "file_suffix": "XNT.csv",
     "min_non_null_percentage": 90,
@@ -82,10 +82,6 @@ CONFIG = {
 # LOGGING SETUP
 # ============================================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -95,8 +91,7 @@ logger = logging.getLogger(__name__)
 
 
 def combine_headers(header_row_1: List[str], header_row_2: List[str]) -> List[str]:
-    """
-    Combines two header rows into a single list of clean, unique column names.
+    """Combine two header rows into a single list of clean column names.
 
     Handles parent-child header relationships, empty cells, and duplicates.
     Preserves Vietnamese characters.
@@ -161,8 +156,7 @@ def combine_headers(header_row_1: List[str], header_row_2: List[str]) -> List[st
 
 
 def extract_date_from_filename(filename: str) -> Optional[Tuple[str, str, str]]:
-    """
-    Extracts year, month, and formatted date from filename.
+    """Extract year, month, and formatted date from filename.
 
     Args:
         filename: Filename matching pattern YYYY_M_XNT.csv
@@ -184,9 +178,11 @@ def extract_date_from_filename(filename: str) -> Optional[Tuple[str, str, str]]:
 # ============================================================================
 
 
-def find_input_files() -> List[Path]:
-    """
-    Finds all XNT.csv files in the input directory.
+def find_input_files(input_dir: Path) -> List[Path]:
+    """Find all XNT.csv files in the input directory.
+
+    Args:
+        input_dir: Directory to search for files
 
     Returns:
         List of file paths
@@ -194,7 +190,6 @@ def find_input_files() -> List[Path]:
     Raises:
         FileNotFoundError: If no XNT.csv files are found
     """
-    input_dir = CONFIG["input_dir"]
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
@@ -210,8 +205,7 @@ def find_input_files() -> List[Path]:
 
 
 def group_files_by_headers(file_paths: List[Path]) -> Dict[Tuple, List[Path]]:
-    """
-    Groups files by their header structure.
+    """Group files by their header structure.
 
     Args:
         file_paths: List of file paths to process
@@ -258,8 +252,7 @@ def group_files_by_headers(file_paths: List[Path]) -> Dict[Tuple, List[Path]]:
 def load_and_process_group(
     combined_header_key: Tuple, file_paths: List[Path]
 ) -> Optional[pd.DataFrame]:
-    """
-    Loads and consolidates dataframes for a group of files with matching headers.
+    """Load and consolidate dataframes for a group of files with matching headers.
 
     Args:
         combined_header_key: The header structure key for this group
@@ -323,8 +316,7 @@ def load_and_process_group(
 def consolidate_files(
     header_groups: Dict[Tuple, List[Path]],
 ) -> Dict[str, pd.DataFrame]:
-    """
-    Consolidates all file groups into dataframes.
+    """Consolidate all file groups into dataframes.
 
     Args:
         header_groups: Dict mapping headers to file paths
@@ -350,8 +342,7 @@ def consolidate_files(
 def clean_data(
     consolidated_dataframes: Dict[str, pd.DataFrame],
 ) -> Dict[str, pd.DataFrame]:
-    """
-    Applies cleaning steps to each consolidated dataframe.
+    """Apply cleaning steps to each consolidated dataframe.
 
     Args:
         consolidated_dataframes: Dict of group name to DataFrame
@@ -401,8 +392,7 @@ def clean_data(
 
 
 def merge_and_refine(consolidated_dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """
-    Merges all consolidated dataframes and applies final refinements.
+    """Merge all consolidated dataframes and apply final refinements.
 
     Args:
         consolidated_dataframes: Dict of DataFrames
@@ -465,8 +455,7 @@ def merge_and_refine(consolidated_dataframes: Dict[str, pd.DataFrame]) -> pd.Dat
 
 
 def format_columns(final_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Formats and converts column data types.
+    """Format and convert column data types.
 
     Args:
         final_df: DataFrame to format
@@ -506,97 +495,28 @@ def format_columns(final_df: pd.DataFrame) -> pd.DataFrame:
     return final_df
 
 
-def save_results(final_df: pd.DataFrame) -> Optional[Path]:
-    """
-    Saves the final DataFrame to CSV with appropriate filename.
+def process(
+    input_dir: Path,
+    staging_dir: Path,
+) -> Optional[Path]:
+    """Process inventory files from input_dir and save to staging_dir.
 
     Args:
-        final_df: Final DataFrame to save
+        input_dir: Directory containing raw XNT CSV files
+        staging_dir: Directory to save staged data
 
     Returns:
-        Path to output file or None if save failed
+        Path to output file or None if processing failed
     """
-    output_dir = CONFIG["output_dir"]
-    output_dir.mkdir(parents=True, exist_ok=True)
+    staging_dir.mkdir(parents=True, exist_ok=True)
 
-    if final_df.empty:
-        logger.warning("Final DataFrame is empty. No output file generated.")
-        return None
+    logger.info("=" * 70)
+    logger.info("STARTING INVENTORY (XUẤT NHẬP TỒN) PROCESSING")
+    logger.info("=" * 70)
 
-    if "Ngày" not in final_df.columns:
-        logger.warning("'Ngày' column missing. No output file generated.")
-        return None
-
-    # Determine period from data
-    final_df_valid = final_df.dropna(subset=["Ngày"])
-    if final_df_valid.empty:
-        output_filename = "Xuất nhập tồn.csv"
-    else:
-        min_date = final_df_valid["Ngày"].min()
-        max_date = final_df_valid["Ngày"].max()
-
-        first_year = min_date.year
-        first_month = str(min_date.month).zfill(2)
-        last_year = max_date.year
-        last_month = str(max_date.month).zfill(2)
-
-        output_filename = (
-            f"Xuất nhập tồn {first_year}-{first_month}_{last_year}-{last_month}.csv"
-        )
-
-    output_filepath = output_dir / output_filename
-    final_df.to_csv(output_filepath, index=False, encoding="utf-8")
-    logger.info(f"Saved output to: {output_filepath}")
-    return output_filepath
-
-
-def print_quality_report(final_df: pd.DataFrame) -> None:
-    """
-    Prints data quality report.
-
-    Args:
-        final_df: Final DataFrame
-    """
-    print("\n" + "=" * 70)
-    print("DATA QUALITY REPORT")
-    print("=" * 70)
-    print(f"\nTotal rows: {len(final_df)}")
-    print(f"Total columns: {len(final_df.columns)}")
-
-    print("\nDataFrame Info:")
-    final_df.info()
-
-    if "Ngày" in final_df.columns:
-        nat_count = final_df["Ngày"].isna().sum()
-        if nat_count > 0:
-            print(f"\nWarning: {nat_count} NaT values in 'Ngày' column")
-        else:
-            print("\nNo NaT values in 'Ngày' column")
-
-    # Null value summary
-    null_summary = final_df.isnull().sum()
-    null_summary = null_summary[null_summary > 0]
-    if not null_summary.empty:
-        print("\nColumns with null values:")
-        for col, count in null_summary.items():
-            pct = (count / len(final_df)) * 100
-            print(f"  {col}: {count} ({pct:.1f}%)")
-
-    print("\n" + "=" * 70)
-
-
-# ============================================================================
-# MAIN EXECUTION
-# ============================================================================
-
-
-def main() -> None:
-    """Main processing pipeline."""
     try:
-        logger.info("Starting XNT data processing pipeline")
-
         # Load input files
-        file_paths = find_input_files()
+        file_paths = find_input_files(input_dir)
 
         # Group by headers
         header_groups = group_files_by_headers(file_paths)
@@ -606,7 +526,7 @@ def main() -> None:
 
         if not consolidated_dataframes:
             logger.error("No data could be processed")
-            return
+            return None
 
         # Clean data
         consolidated_dataframes = clean_data(consolidated_dataframes)
@@ -616,23 +536,66 @@ def main() -> None:
 
         if final_df.empty:
             logger.error("Final DataFrame is empty after processing")
-            return
+            return None
 
         # Format columns
         final_df = format_columns(final_df)
 
-        # Save results
-        output_path = save_results(final_df)
+        # Determine output filename from data
+        if "Ngày" not in final_df.columns:
+            logger.warning("'Ngày' column missing")
+            output_filename = "xuat_nhap_ton.csv"
+        else:
+            final_df_valid = final_df.dropna(subset=["Ngày"])
+            if final_df_valid.empty:
+                output_filename = "xuat_nhap_ton.csv"
+            else:
+                min_date = final_df_valid["Ngày"].min()
+                max_date = final_df_valid["Ngày"].max()
+
+                first_year = min_date.year
+                first_month = str(min_date.month).zfill(2)
+                last_year = max_date.year
+                last_month = str(max_date.month).zfill(2)
+
+                output_filename = f"xuat_nhap_ton_{first_year}_{first_month}_{last_year}_{last_month}.csv"
+
+        output_filepath = staging_dir / output_filename
+        final_df.to_csv(output_filepath, index=False, encoding="utf-8")
+        logger.info(f"Saved output to: {output_filepath}")
 
         # Print quality report
-        print_quality_report(final_df)
+        logger.info("=" * 70)
+        logger.info("DATA QUALITY REPORT")
+        logger.info("=" * 70)
+        logger.info(f"Total rows: {len(final_df)}")
+        logger.info(f"Total columns: {len(final_df.columns)}")
 
-        logger.info("Processing completed successfully")
+        # Null value summary
+        null_summary = final_df.isnull().sum()
+        null_summary = null_summary[null_summary > 0]
+        if not null_summary.empty:
+            logger.info("Columns with null values:")
+            for col, count in null_summary.items():
+                pct = (count / len(final_df)) * 100
+                logger.info(f"  {col}: {count} ({pct:.1f}%)")
+
+        logger.info("=" * 70)
+        logger.info("INVENTORY PROCESSING COMPLETED SUCCESSFULLY")
+        logger.info("=" * 70)
+
+        return output_filepath
 
     except Exception as e:
-        logger.error(f"Pipeline failed: {str(e)}", exc_info=True)
+        logger.error(f"Inventory processing pipeline failed: {str(e)}", exc_info=True)
         raise
 
 
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    input_dir = Path.cwd() / "data" / "00-raw" / "import_export"
+    staging_dir = Path.cwd() / "data" / "01-staging" / "import_export"
+    process(input_dir, staging_dir)

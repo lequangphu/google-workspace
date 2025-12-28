@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Clean import receipt data (Chứng từ nhập) from CSV files.
+"""Clean purchase receipt data (Chứng từ nhập) from CSV files.
+
+Module: import_export_receipts
+Raw source: XUẤT NHẬP TỒN TỔNG T* (CT.NHAP sheet from Google Drive)
+Pipeline stage: data/00-raw/ → data/01-staging/
+Output: Cleaned purchase receipt details for Products/PriceBook extraction
 
 This script:
-1. Loads CSV files with multi-level headers
+1. Loads CSV files with multi-level headers from data/00-raw/
 2. Extracts and combines headers
 3. Parses dates robustly (handles Excel dates, multiple formats, ambiguities)
 4. Validates dates against source year/month
-5. Standardizes columns and exports cleaned data
+5. Standardizes columns and exports cleaned data to data/01-staging/
 """
 
 import csv
@@ -23,14 +28,9 @@ import pandas as pd
 # CONFIGURATION
 # ============================================================================
 
-CONFIG = {
-    "data_dir": Path.cwd() / "data" / "raw",
-    "file_pattern": "*CT.NHAP.csv",
-    "output_dir": Path.cwd() / "data" / "cleaned",
-    "header_row_main": 3,  # 0-indexed
-    "header_row_sub": 4,
-    "data_start_row": 5,
-}
+# Data folder paths (from data/README.md: ingest → staging)
+DATA_RAW_DIR = Path.cwd() / "data" / "00-raw" / "import_export"
+DATA_STAGING_DIR = Path.cwd() / "data" / "01-staging" / "import_export"
 
 # Column mappings: specific indices for NHAP structure
 HEADER_COLUMN_MAP = [
@@ -68,7 +68,7 @@ COLUMNS_TO_DROP = {
     "group_2_specific": ["Nhà SX", "GHI CHÚ"],
 }
 
-# Column rename mapping
+# Column rename mapping (normalize to KiotViet column names)
 RENAME_MAPPING = {
     "Chứng từ nhập_PNK": "Mã chứng từ",
     "Chứng từ nhập_Ngày": "Ngày",
@@ -80,7 +80,7 @@ RENAME_MAPPING = {
     "Thành tiền": "Thành tiền",
 }
 
-# Final column order
+# Final column order (for output)
 COLUMN_ORDER = [
     "Mã hàng",
     "Tên hàng",
@@ -100,7 +100,7 @@ COLUMN_ORDER = [
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -109,48 +109,70 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 
-def combine_headers(header_row1: List[str], header_row2: List[str]) -> Tuple[List[str], List[int]]:
-     """Combine two header rows into a single standardized header list.
-     
-     Args:
-         header_row1: Primary header row
-         header_row2: Secondary header row
-         
-     Returns:
-         tuple: (combined_headers, original_indices)
-     """
-     # Helper to normalize headers: strip and replace internal newlines/spaces
-     def normalize_header(h: str) -> str:
-         return re.sub(r"\s+", " ", h.strip())
-     
-     final_combined_headers = [
-         f"{normalize_header(header_row1[0])}_{normalize_header(header_row2[0])}",
-         f"{normalize_header(header_row1[0])}_{normalize_header(header_row2[1])}",
-         f"{normalize_header(header_row1[0])}_{normalize_header(header_row2[2])}",
-         normalize_header(header_row2[3]),
-         normalize_header(header_row1[4]),
-         normalize_header(header_row1[5]),
-         normalize_header(header_row1[6]),
-         normalize_header(header_row1[7]),
-         f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[8])}",
-         f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[9])}",
-         f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[10])}",
-         f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[14])}",
-         f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[15])}",
-         normalize_header(header_row1[22]),
-         normalize_header(header_row1[23]),
-         normalize_header(header_row1[24]),
-         normalize_header(header_row1[25]),
-         f"{normalize_header(header_row1[26])}_{normalize_header(header_row2[26])}",
-         f"{normalize_header(header_row1[26])}_{normalize_header(header_row2[27])}",
-         f"{normalize_header(header_row1[26])}_{normalize_header(header_row2[28])}",
-     ]
-     
-     original_indices = [
-         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 15, 22, 23, 24, 25, 26, 27, 28
-     ]
-     
-     return final_combined_headers, original_indices
+def combine_headers(
+    header_row1: List[str], header_row2: List[str]
+) -> Tuple[List[str], List[int]]:
+    """Combine two header rows into a single standardized header list.
+
+    Args:
+        header_row1: Primary header row
+        header_row2: Secondary header row
+
+    Returns:
+        tuple: (combined_headers, original_indices)
+    """
+
+    def normalize_header(h: str) -> str:
+        """Strip and replace internal whitespace."""
+        return re.sub(r"\s+", " ", h.strip())
+
+    final_combined_headers = [
+        f"{normalize_header(header_row1[0])}_{normalize_header(header_row2[0])}",
+        f"{normalize_header(header_row1[0])}_{normalize_header(header_row2[1])}",
+        f"{normalize_header(header_row1[0])}_{normalize_header(header_row2[2])}",
+        normalize_header(header_row2[3]),
+        normalize_header(header_row1[4]),
+        normalize_header(header_row1[5]),
+        normalize_header(header_row1[6]),
+        normalize_header(header_row1[7]),
+        f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[8])}",
+        f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[9])}",
+        f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[10])}",
+        f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[14])}",
+        f"{normalize_header(header_row1[8])}_{normalize_header(header_row2[15])}",
+        normalize_header(header_row1[22]),
+        normalize_header(header_row1[23]),
+        normalize_header(header_row1[24]),
+        normalize_header(header_row1[25]),
+        f"{normalize_header(header_row1[26])}_{normalize_header(header_row2[26])}",
+        f"{normalize_header(header_row1[26])}_{normalize_header(header_row2[27])}",
+        f"{normalize_header(header_row1[26])}_{normalize_header(header_row2[28])}",
+    ]
+
+    original_indices = [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        14,
+        15,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+    ]
+
+    return final_combined_headers, original_indices
 
 
 def is_float_check(value) -> bool:
@@ -172,7 +194,7 @@ def try_parse_date(date_str: str, fmt: str) -> pd.Timestamp:
 
 def parse_date_robustly(row) -> pd.Timestamp:
     """Parse date string robustly with multiple format attempts.
-    
+
     Strategy:
     1. Try unambiguous 4-digit year formats
     2. Try ambiguous formats (DD/MM/YYYY vs MM/DD/YYYY), guided by source month
@@ -249,9 +271,11 @@ def parse_date_robustly(row) -> pd.Timestamp:
     return pd.NaT
 
 
-def load_and_extract_headers(matching_files: List[Path]) -> Dict[Path, Tuple[List[str], List[int]]]:
+def load_and_extract_headers(
+    matching_files: List[Path],
+) -> Dict[Path, Tuple[List[str], List[int]]]:
     """Load CSV files and extract headers.
-    
+
     Returns:
         dict: Mapping of file_path to (combined_headers, original_indices)
     """
@@ -262,11 +286,12 @@ def load_and_extract_headers(matching_files: List[Path]) -> Dict[Path, Tuple[Lis
                 reader = csv.reader(f)
                 rows = list(reader)
 
-            if len(rows) > CONFIG["header_row_sub"]:
-                header_row_main = rows[CONFIG["header_row_main"]]
-                header_row_sub = rows[CONFIG["header_row_sub"]]
+            header_row_main = 3  # 0-indexed
+            header_row_sub = 4
+
+            if len(rows) > header_row_sub:
                 combined_header, original_indices = combine_headers(
-                    header_row_main, header_row_sub
+                    rows[header_row_main], rows[header_row_sub]
                 )
                 file_headers_map[file_path] = (combined_header, original_indices)
             else:
@@ -278,20 +303,20 @@ def load_and_extract_headers(matching_files: List[Path]) -> Dict[Path, Tuple[Lis
 
 
 def process_group_data(
-    files_and_indices_list: List[Tuple[Path, List[int]]], 
-    common_headers: List[str]
+    files_and_indices_list: List[Tuple[Path, List[int]]], common_headers: List[str]
 ) -> pd.DataFrame:
     """Process data for a single group of files with same headers.
-    
+
     Args:
         files_and_indices_list: List of (file_path, original_indices) tuples
         common_headers: List of column names
-        
+
     Returns:
         pd.DataFrame: Merged DataFrame for the group
     """
     group_dfs = []
-    
+    data_start_row = 5
+
     for file_path, original_indices in files_and_indices_list:
         try:
             # Extract year/month from filename (format: YYYY_MM_...)
@@ -304,20 +329,20 @@ def process_group_data(
                 reader = csv.reader(f)
                 all_rows = list(reader)
 
-            if len(all_rows) < CONFIG["data_start_row"]:
+            if len(all_rows) < data_start_row:
                 logger.warning(f"{file_path.name} has <5 rows, skipping data.")
                 continue
 
-            data_rows = all_rows[CONFIG["data_start_row"] :]
+            data_rows = all_rows[data_start_row:]
             processed_data = []
-            
+
             for row in data_rows:
                 if len(row) > max(original_indices) if original_indices else 0:
                     processed_data.append([row[idx] for idx in original_indices])
                 else:
                     # Fill missing columns with pd.NA
                     new_row = [
-                        row[idx] if idx < len(row) else pd.NA 
+                        row[idx] if idx < len(row) else pd.NA
                         for idx in original_indices
                     ]
                     processed_data.append(new_row)
@@ -327,7 +352,7 @@ def process_group_data(
             df["_source_file_month"] = source_month
             df["_source_file_year"] = source_year
             group_dfs.append(df)
-            
+
         except Exception as e:
             logger.error(f"Error loading {file_path.name}: {e}")
 
@@ -336,7 +361,7 @@ def process_group_data(
 
 def clean_dates(df: pd.DataFrame) -> pd.DataFrame:
     """Clean and parse dates in the 'Ngày' column.
-    
+
     Handles:
     - Excel serial dates (floats)
     - Multiple date formats (string)
@@ -349,7 +374,9 @@ def clean_dates(df: pd.DataFrame) -> pd.DataFrame:
 
     # Parse string dates
     if not string_dates_df.empty:
-        string_dates_df["Parsed Ngày"] = string_dates_df.apply(parse_date_robustly, axis=1)
+        string_dates_df["Parsed Ngày"] = string_dates_df.apply(
+            parse_date_robustly, axis=1
+        )
 
     # Convert Excel serial dates
     if not float_dates_df.empty:
@@ -359,9 +386,7 @@ def clean_dates(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     # Merge parsed dates back to main dataframe
-    processed_dates = pd.Series(
-        pd.NaT, index=df.index, dtype="datetime64[ns]"
-    )
+    processed_dates = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
     if not string_dates_df.empty:
         processed_dates.update(string_dates_df["Parsed Ngày"])
     if not float_dates_df.empty:
@@ -373,22 +398,24 @@ def clean_dates(df: pd.DataFrame) -> pd.DataFrame:
     # Handle date mismatches with backward fill
     verify_dates = pd.to_datetime(df["Ngày"], errors="coerce")
     mismatch_mask = verify_dates.notna() & (
-        (verify_dates.dt.year != df["_source_file_year"]) |
-        (verify_dates.dt.month != df["_source_file_month"])
+        (verify_dates.dt.year != df["_source_file_year"])
+        | (verify_dates.dt.month != df["_source_file_month"])
     )
-    
+
     if mismatch_mask.any():
         df.loc[mismatch_mask, "Ngày"] = pd.NaT
         df["Ngày"] = df["Ngày"].bfill()
-        logger.info(f"Applied backward fill to {mismatch_mask.sum()} conflicting dates.")
+        logger.info(
+            f"Applied backward fill to {mismatch_mask.sum()} conflicting dates."
+        )
 
     # Enforce source year/month for remaining mismatches
     verify_dates = pd.to_datetime(df["Ngày"], errors="coerce")
     final_mismatch = verify_dates.notna() & (
-        (verify_dates.dt.year != df["_source_file_year"]) |
-        (verify_dates.dt.month != df["_source_file_month"])
+        (verify_dates.dt.year != df["_source_file_year"])
+        | (verify_dates.dt.month != df["_source_file_month"])
     )
-    
+
     if final_mismatch.any():
         for idx in df[final_mismatch].index:
             try:
@@ -396,10 +423,10 @@ def clean_dates(df: pd.DataFrame) -> pd.DataFrame:
                 day = current_date.day if pd.notna(current_date) else 1
                 year = int(df.loc[idx, "_source_file_year"])
                 month = int(df.loc[idx, "_source_file_month"])
-                
+
                 max_days = pd.Timestamp(year, month, 1).days_in_month
                 day = min(day, max_days)
-                
+
                 df.loc[idx, "Ngày"] = datetime(year, month, day)
             except (ValueError, TypeError):
                 df.loc[idx, "Ngày"] = datetime(
@@ -407,7 +434,7 @@ def clean_dates(df: pd.DataFrame) -> pd.DataFrame:
                     int(df.loc[idx, "_source_file_month"]),
                     1,
                 )
-        
+
         logger.info(f"Resolved {final_mismatch.sum()} year/month mismatches.")
 
     # Format as ISO string
@@ -429,7 +456,7 @@ def standardize_column_types(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].astype(str)
             if col == "Mã hàng":
                 df[col] = df[col].str.upper()
-    
+
     # Clean specific text columns
     for col in ["Tên hàng", "Tên nhà cung cấp"]:
         if col in df.columns:
@@ -467,19 +494,16 @@ def generate_output_filename(df: pd.DataFrame) -> str:
     """Generate filename from date range in data."""
     if "Năm" in df.columns and "Tháng" in df.columns:
         df["_source_date"] = pd.to_datetime(
-            df["Năm"].astype(str) + "-" +
-            df["Tháng"].astype(str) + "-01",
+            df["Năm"].astype(str) + "-" + df["Tháng"].astype(str) + "-01",
             errors="coerce",
         )
         min_date = df["_source_date"].min()
         max_date = df["_source_date"].max()
-        
+
         min_year, min_month = min_date.year, min_date.month
         max_year, max_month = max_date.year, max_date.month
-        
-        filename = (
-            f"Chi tiết nhập {min_year:04d}-{min_month:02d}_{max_year:04d}-{max_month:02d}.csv"
-        )
+
+        filename = f"Chi tiết nhập {min_year:04d}-{min_month:02d}_{max_year:04d}-{max_month:02d}.csv"
         df.drop(columns=["_source_date"], inplace=True)
     else:
         filename = "Chi tiết nhập.csv"
@@ -488,27 +512,45 @@ def generate_output_filename(df: pd.DataFrame) -> str:
 
 
 # ============================================================================
-# MAIN EXECUTION
+# MAIN PIPELINE FUNCTION
 # ============================================================================
 
-def main() -> None:
-    """Main processing pipeline."""
-    logger.info("Starting import receipt (CT.NHAP) processing")
-    
-    # Find files
-    data_dir = CONFIG["data_dir"]
-    file_pattern = CONFIG["file_pattern"]
-    matching_files = list(data_dir.glob(file_pattern))
+
+def transform_purchase_receipts(
+    input_dir: Optional[Path] = None, output_dir: Optional[Path] = None
+) -> Path:
+    """Transform purchase receipt data from raw to staging.
+
+    Args:
+        input_dir: Path to raw directory (default: data/00-raw/import_export/)
+        output_dir: Path to staging directory (default: data/01-staging/import_export/)
+
+    Returns:
+        Path: Output file path
+    """
+    logger.info("=" * 70)
+    logger.info("Starting purchase receipt (CT.NHAP) transformation")
+    logger.info("=" * 70)
+
+    # Use defaults if not provided
+    if input_dir is None:
+        input_dir = DATA_RAW_DIR
+    if output_dir is None:
+        output_dir = DATA_STAGING_DIR
+
+    # Find files matching pattern
+    file_pattern = "*CT.NHAP.csv"
+    matching_files = list(input_dir.glob(file_pattern))
 
     if not matching_files:
-        logger.warning(f"No CSV files found matching {file_pattern}")
-        return
+        logger.warning(f"No CSV files found matching {file_pattern} in {input_dir}")
+        return None
 
     logger.info(f"Processing {len(matching_files)} file(s)")
 
     # Step 1: Load and extract headers
     file_headers_map = load_and_extract_headers(matching_files)
-    
+
     # Step 2: Group files by header signature
     grouped_files = defaultdict(list)
     for file_path, (headers, indices) in file_headers_map.items():
@@ -519,13 +561,13 @@ def main() -> None:
     for i, (headers_tuple, files_and_indices) in enumerate(grouped_files.items()):
         common_headers = list(headers_tuple)
         merged_df = process_group_data(files_and_indices, common_headers)
-        
+
         if not merged_df.empty:
             merged_dataframes[f"Group_{i + 1}"] = merged_df
 
     if not merged_dataframes:
         logger.warning("No data to process.")
-        return
+        return None
 
     # Step 4: Drop and rename columns first (before combining)
     processed_groups = {}
@@ -533,7 +575,7 @@ def main() -> None:
         cols_to_drop = COLUMNS_TO_DROP["common"].copy()
         if "Group_2" in group_key:
             cols_to_drop.extend(COLUMNS_TO_DROP["group_2_specific"])
-        
+
         df = df.drop(columns=cols_to_drop, errors="ignore")
         df = df.rename(columns=RENAME_MAPPING)
         if "Số lượng" in df.columns:
@@ -547,8 +589,9 @@ def main() -> None:
 
     # Step 5.5: Fill null Đơn giá and Thành tiền with 0 for rows with non-null Số lượng
     for col in ["Đơn giá", "Thành tiền"]:
-        final_combined_df.loc[final_combined_df["Số lượng"].notna(), col] = \
+        final_combined_df.loc[final_combined_df["Số lượng"].notna(), col] = (
             final_combined_df.loc[final_combined_df["Số lượng"].notna(), col].fillna(0)
+        )
 
     # Step 6: Clean dates
     final_combined_df = clean_dates(final_combined_df)
@@ -564,17 +607,19 @@ def main() -> None:
     # Step 9: Reorder and sort
     final_combined_df = reorder_and_sort(final_combined_df)
 
-    # Step 10: Save to CSV
-    output_dir = CONFIG["output_dir"]
+    # Step 10: Save to validated directory
     output_dir.mkdir(parents=True, exist_ok=True)
-
     output_filename = generate_output_filename(final_combined_df)
     output_filepath = output_dir / output_filename
-    
+
     final_combined_df.to_csv(output_filepath, index=False, encoding="utf-8")
-    logger.info(f"Final DataFrame saved to: {output_filepath}")
-    logger.info(f"Rows: {len(final_combined_df)}, Columns: {len(final_combined_df.columns)}")
+    logger.info(f"Saved to: {output_filepath}")
+    logger.info(
+        f"Rows: {len(final_combined_df)}, Columns: {len(final_combined_df.columns)}"
+    )
+
+    return output_filepath
 
 
 if __name__ == "__main__":
-    main()
+    transform_purchase_receipts()
