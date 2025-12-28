@@ -106,16 +106,13 @@ def normalize_product_code(code: str) -> str:
 
 def reconcile_purchases(
     purchase_summary: pd.DataFrame, inventory_data: pd.DataFrame
-) -> pd.DataFrame:
-    """Compare purchase summary with inventory nhập trong kỳ.
-    
-    Aggregates both purchase summary and inventory data by product 
-    (across all months) and compares totals.
+) -> tuple:
+    """Compare purchase summary with inventory nhập trong kỳ at multiple levels.
     
     Returns:
-        pd.DataFrame with reconciliation details and discrepancies
+        tuple: (product_level_comparison, month_level_comparison)
     """
-    # Aggregate purchase summary by product (sum across all months/years)
+    # Product-level reconciliation (sum across all months)
     purchase_agg = (
         purchase_summary.groupby("Mã hàng", as_index=False)
         .agg({"Số lượng": "sum", "Thành tiền": "sum"})
@@ -123,7 +120,6 @@ def reconcile_purchases(
     purchase_agg["Mã hàng"] = purchase_agg["Mã hàng"].apply(normalize_product_code)
     purchase_agg.columns = ["Mã hàng", "Số lượng_receipt", "Thành tiền_receipt"]
     
-    # Aggregate inventory data by product (sum across all months/records)
     inventory_purchase = inventory_data[[
         "Mã hàng", "Số lượng nhập trong kỳ", "Thành tiền nhập trong kỳ"
     ]].copy()
@@ -135,41 +131,51 @@ def reconcile_purchases(
         .agg({"Số lượng nhập trong kỳ": "sum", "Thành tiền nhập trong kỳ": "sum"})
     )
     
-    # Merge on product code
-    comparison = pd.merge(
+    product_comparison = pd.merge(
         purchase_agg,
         inventory_purchase,
         on="Mã hàng",
         how="outer",
     )
     
-    # Calculate discrepancies
-    comparison["Số lượng_diff"] = (
-        comparison["Số lượng_receipt"].fillna(0) - comparison["Số lượng nhập trong kỳ"].fillna(0)
+    product_comparison["Số lượng_diff"] = (
+        product_comparison["Số lượng_receipt"].fillna(0) - product_comparison["Số lượng nhập trong kỳ"].fillna(0)
     )
-    comparison["Thành tiền_diff"] = (
-        comparison["Thành tiền_receipt"].fillna(0) - comparison["Thành tiền nhập trong kỳ"].fillna(0)
+    product_comparison["Thành tiền_diff"] = (
+        product_comparison["Thành tiền_receipt"].fillna(0) - product_comparison["Thành tiền nhập trong kỳ"].fillna(0)
     )
-    comparison["Discrepancy"] = (
-        (comparison["Số lượng_diff"].abs() > 0.01)
-        | (comparison["Thành tiền_diff"].abs() > 1.0)
+    product_comparison["Discrepancy"] = (
+        (product_comparison["Số lượng_diff"].abs() > 0.01)
+        | (product_comparison["Thành tiền_diff"].abs() > 1.0)
     )
+    product_comparison = product_comparison.sort_values("Discrepancy", ascending=False)
     
-    return comparison.sort_values("Discrepancy", ascending=False)
+    # Month-level reconciliation (by Mã hàng, Tháng, Năm)
+    purchase_monthly = (
+        purchase_summary.groupby(["Mã hàng", "Tháng", "Năm"], as_index=False)
+        .agg({"Số lượng": "sum", "Thành tiền": "sum"})
+    )
+    purchase_monthly["Mã hàng"] = purchase_monthly["Mã hàng"].apply(normalize_product_code)
+    purchase_monthly.columns = ["Mã hàng", "Tháng", "Năm", "Số lượng_receipt", "Thành tiền_receipt"]
+    
+    # Note: inventory data may not have month/year breakdown, aggregate it by Mã hàng only
+    # This is a limitation - we can't truly reconcile by month with the current inventory structure
+    # So month-level shows receipt data only
+    month_comparison = purchase_monthly.copy()
+    month_comparison["Note"] = "Inventory data does not have month-level breakdown"
+    
+    return product_comparison, month_comparison
 
 
 def reconcile_sales(
     sale_summary: pd.DataFrame, inventory_data: pd.DataFrame
-) -> pd.DataFrame:
-    """Compare sale summary with inventory xuất trong kỳ.
-    
-    Aggregates both sale summary and inventory data by product 
-    (across all months) and compares totals.
+) -> tuple:
+    """Compare sale summary with inventory xuất trong kỳ at multiple levels.
     
     Returns:
-        pd.DataFrame with reconciliation details and discrepancies
+        tuple: (product_level_comparison, month_level_comparison)
     """
-    # Aggregate sale summary by product (sum across all months/years)
+    # Product-level reconciliation (sum across all months)
     sale_agg = (
         sale_summary.groupby("Mã hàng", as_index=False)
         .agg({"Số lượng": "sum", "Thành tiền": "sum"})
@@ -177,7 +183,6 @@ def reconcile_sales(
     sale_agg["Mã hàng"] = sale_agg["Mã hàng"].apply(normalize_product_code)
     sale_agg.columns = ["Mã hàng", "Số lượng_receipt", "Thành tiền_receipt"]
     
-    # Aggregate inventory data by product (sum across all months/records)
     inventory_sale = inventory_data[[
         "Mã hàng", "Số lượng xuất trong kỳ", "Thành tiền xuất trong kỳ"
     ]].copy()
@@ -187,27 +192,39 @@ def reconcile_sales(
         .agg({"Số lượng xuất trong kỳ": "sum", "Thành tiền xuất trong kỳ": "sum"})
     )
     
-    # Merge on product code
-    comparison = pd.merge(
+    product_comparison = pd.merge(
         sale_agg,
         inventory_sale,
         on="Mã hàng",
         how="outer",
     )
     
-    # Calculate discrepancies
-    comparison["Số lượng_diff"] = (
-        comparison["Số lượng_receipt"].fillna(0) - comparison["Số lượng xuất trong kỳ"].fillna(0)
+    product_comparison["Số lượng_diff"] = (
+        product_comparison["Số lượng_receipt"].fillna(0) - product_comparison["Số lượng xuất trong kỳ"].fillna(0)
     )
-    comparison["Thành tiền_diff"] = (
-        comparison["Thành tiền_receipt"].fillna(0) - comparison["Thành tiền xuất trong kỳ"].fillna(0)
+    product_comparison["Thành tiền_diff"] = (
+        product_comparison["Thành tiền_receipt"].fillna(0) - product_comparison["Thành tiền xuất trong kỳ"].fillna(0)
     )
-    comparison["Discrepancy"] = (
-        (comparison["Số lượng_diff"].abs() > 0.01)
-        | (comparison["Thành tiền_diff"].abs() > 1.0)
+    product_comparison["Discrepancy"] = (
+        (product_comparison["Số lượng_diff"].abs() > 0.01)
+        | (product_comparison["Thành tiền_diff"].abs() > 1.0)
     )
+    product_comparison = product_comparison.sort_values("Discrepancy", ascending=False)
     
-    return comparison.sort_values("Discrepancy", ascending=False)
+    # Month-level reconciliation (by Mã hàng, Tháng, Năm)
+    sale_monthly = (
+        sale_summary.groupby(["Mã hàng", "Tháng", "Năm"], as_index=False)
+        .agg({"Số lượng": "sum", "Thành tiền": "sum"})
+    )
+    sale_monthly["Mã hàng"] = sale_monthly["Mã hàng"].apply(normalize_product_code)
+    sale_monthly.columns = ["Mã hàng", "Tháng", "Năm", "Số lượng_receipt", "Thành tiền_receipt"]
+    
+    # Note: inventory data may not have month/year breakdown
+    # So month-level shows receipt data only
+    month_comparison = sale_monthly.copy()
+    month_comparison["Note"] = "Inventory data does not have month-level breakdown"
+    
+    return product_comparison, month_comparison
 
 
 def print_summary_stats(comparison_df: pd.DataFrame, prefix: str) -> None:
@@ -262,26 +279,40 @@ def reconcile_receipts_with_inventory(
         logger.info("=" * 70)
         logger.info("Reconciling purchase receipts with inventory nhập trong kỳ")
         logger.info("=" * 70)
-        purchase_reconciliation = reconcile_purchases(purchase_summary, inventory_data)
-        print_summary_stats(purchase_reconciliation, "PURCHASE")
+        purchase_product, purchase_monthly = reconcile_purchases(purchase_summary, inventory_data)
+        print_summary_stats(purchase_product, "PURCHASE (product-level)")
         
-        # Export to CSV
-        reconciliation_file = staging_dir / "reconciliation_purchase.csv"
-        purchase_reconciliation.to_csv(reconciliation_file, index=False, encoding="utf-8")
-        logger.info(f"Saved purchase reconciliation to: {reconciliation_file}")
+        # Export product-level reconciliation
+        reconciliation_file = staging_dir / "reconciliation_purchase_product.csv"
+        purchase_product.to_csv(reconciliation_file, index=False, encoding="utf-8")
+        logger.info(f"Saved purchase product-level to: {reconciliation_file}")
+        
+        # Export month-level reconciliation
+        reconciliation_file = staging_dir / "reconciliation_purchase_monthly.csv"
+        purchase_monthly.to_csv(reconciliation_file, index=False, encoding="utf-8")
+        logger.info(f"Saved purchase monthly-level to: {reconciliation_file}")
+        
+        purchase_reconciliation = purchase_product
     
     # Reconcile sales
     if sale_summary is not None:
         logger.info("=" * 70)
         logger.info("Reconciling sale receipts with inventory xuất trong kỳ")
         logger.info("=" * 70)
-        sale_reconciliation = reconcile_sales(sale_summary, inventory_data)
-        print_summary_stats(sale_reconciliation, "SALE")
+        sale_product, sale_monthly = reconcile_sales(sale_summary, inventory_data)
+        print_summary_stats(sale_product, "SALE (product-level)")
         
-        # Export to CSV
-        reconciliation_file = staging_dir / "reconciliation_sale.csv"
-        sale_reconciliation.to_csv(reconciliation_file, index=False, encoding="utf-8")
-        logger.info(f"Saved sale reconciliation to: {reconciliation_file}")
+        # Export product-level reconciliation
+        reconciliation_file = staging_dir / "reconciliation_sale_product.csv"
+        sale_product.to_csv(reconciliation_file, index=False, encoding="utf-8")
+        logger.info(f"Saved sale product-level to: {reconciliation_file}")
+        
+        # Export month-level reconciliation
+        reconciliation_file = staging_dir / "reconciliation_sale_monthly.csv"
+        sale_monthly.to_csv(reconciliation_file, index=False, encoding="utf-8")
+        logger.info(f"Saved sale monthly-level to: {reconciliation_file}")
+        
+        sale_reconciliation = sale_product
     
     logger.info("=" * 70)
     logger.info("Reconciliation complete")
