@@ -618,6 +618,26 @@ def transform_purchase_receipts(
         f"Rows: {len(final_combined_df)}, Columns: {len(final_combined_df.columns)}"
     )
 
+    # Create summary dataframe (aggregate by Mã hàng, Tháng, Năm)
+    logger.info("=" * 70)
+    logger.info("Creating summary aggregation by product and month/year")
+    summary_df = final_combined_df.groupby(
+        ["Mã hàng", "Tháng", "Năm"], as_index=False
+    ).agg(
+        {"Số lượng": "sum", "Thành tiền": "sum"}
+    )
+    
+    # Reorder columns to match detail data structure
+    summary_df = summary_df[["Mã hàng", "Số lượng", "Thành tiền", "Tháng", "Năm"]]
+    
+    # Generate summary filename
+    summary_filename = output_filename.replace("Chi tiết nhập", "Tổng hợp nhập")
+    summary_filepath = output_dir / summary_filename
+    summary_df.to_csv(summary_filepath, index=False, encoding="utf-8")
+    logger.info(f"Saved summary to: {summary_filepath}")
+    logger.info(f"Summary rows: {len(summary_df)}, Columns: {len(summary_df.columns)}")
+    logger.info("=" * 70)
+
     return output_filepath
 
 
