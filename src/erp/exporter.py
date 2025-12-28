@@ -21,6 +21,109 @@ from .templates import (
 logger = logging.getLogger(__name__)
 
 
+def _load_inventory_with_latest_month(inventory_path: Path) -> pd.DataFrame:
+    """Load inventory data and extract latest month's ending quantities.
+
+    Reads clean_inventory.py output (which contains multiple months) and
+    extracts the "Số lượng cuối kỳ" (ending quantity) from the latest month
+    for each product.
+
+    If the primary inventory_path is a validated summary, attempts to load
+    the clean_inventory staging file instead.
+
+    Args:
+        inventory_path: Path to inventory CSV (validated or staging clean_inventory output)
+
+    Returns:
+        DataFrame with product codes and latest month's ending quantities
+    """
+    # First, try the provided path
+    if inventory_path.exists():
+        df = pd.read_csv(inventory_path)
+        logger.info(f"Loaded inventory CSV with {len(df)} rows")
+
+        # Check if this is output from clean_inventory.py (has date column)
+        if "Ngày" in df.columns:
+            logger.info("Processing clean_inventory output (multi-month data)")
+
+            # Convert Ngày to datetime
+            df["Ngày"] = pd.to_datetime(df["Ngày"], errors="coerce")
+
+            # Sort by product and date
+            df = df.sort_values(["Mã hàng", "Ngày"], na_position="last")
+
+            # Extract latest month for each product
+            latest_inventory = df.loc[df.groupby("Mã hàng")["Ngày"].idxmax()]
+
+            # Create new DataFrame with mapping from Mã hàng to Số lượng cuối kỳ
+            result = pd.DataFrame()
+            result["Mã hàng"] = latest_inventory["Mã hàng"]
+            result["Số lượng cuối kỳ"] = latest_inventory["Số lượng cuối kỳ"]
+
+            logger.info(
+                f"Extracted latest month inventory for {len(result)} unique products"
+            )
+            return result
+        else:
+            logger.info(
+                "Inventory CSV is a summary (no 'Ngày' column), "
+                "attempting to load clean_inventory staging file..."
+            )
+
+            # Try to load from staging directory
+            staging_clean_inventory = (
+                inventory_path.parent.parent / "01-staging" / "import_export"
+            )
+            if staging_clean_inventory.exists():
+                # Find the latest xuat_nhap_ton file (exclude adjustments)
+                xnt_files = [
+                    f
+                    for f in staging_clean_inventory.glob("xuat_nhap_ton_*.csv")
+                    if "_adjustments" not in f.name
+                ]
+                if xnt_files:
+                    # Get the most recent file
+                    latest_xnt = max(xnt_files, key=lambda p: p.stat().st_mtime)
+                    logger.info(
+                        f"Loading clean_inventory staging file: {latest_xnt.name}"
+                    )
+
+                    staging_df = pd.read_csv(latest_xnt)
+                    if "Ngày" in staging_df.columns:
+                        # Convert Ngày to datetime
+                        staging_df["Ngày"] = pd.to_datetime(
+                            staging_df["Ngày"], errors="coerce"
+                        )
+
+                        # Sort by product and date
+                        staging_df = staging_df.sort_values(
+                            ["Mã hàng", "Ngày"], na_position="last"
+                        )
+
+                        # Extract latest month for each product
+                        latest_inventory = staging_df.loc[
+                            staging_df.groupby("Mã hàng")["Ngày"].idxmax()
+                        ]
+
+                        # Create new DataFrame with mapping from Mã hàng to Số lượng cuối kỳ
+                        result = pd.DataFrame()
+                        result["Mã hàng"] = latest_inventory["Mã hàng"]
+                        result["Số lượng cuối kỳ"] = latest_inventory["Số lượng cuối kỳ"]
+
+                        logger.info(
+                            f"Extracted latest month inventory for {len(result)} unique products"
+                        )
+                        return result
+
+            logger.warning(
+                "Could not load clean_inventory staging file, using validated summary as-is"
+            )
+            return df
+    else:
+        logger.error(f"Inventory file not found: {inventory_path}")
+        return pd.DataFrame()
+
+
 def export_products_xlsx(
     product_info_path: Path,
     inventory_path: Path,
@@ -56,7 +159,11 @@ def export_products_xlsx(
     products = pd.read_csv(product_info_path)
 
     logger.info(f"Loading inventory from {inventory_path}")
-    inventory = pd.read_csv(inventory_path)
+    inventory_latest_qty = _load_inventory_with_latest_month(inventory_path)
+
+    # Also load validated inventory summary for cost columns
+    logger.info(f"Loading validated inventory summary from {inventory_path}")
+    inventory_summary = pd.read_csv(inventory_path)
 
     logger.info(f"Loading price_sale from {price_sale_path}")
     prices = pd.read_csv(price_sale_path)
@@ -64,20 +171,40 @@ def export_products_xlsx(
     logger.info(f"Loading enrichment from {enrichment_path}")
     enrichment = pd.read_csv(enrichment_path)
 
+    # Merge latest quantity from clean_inventory with cost from validated summary
+    if not inventory_latest_qty.empty and not inventory_summary.empty:
+        inventory = inventory_latest_qty.merge(
+            inventory_summary[["Mã hàng", "Giá vốn"]],
+            on="Mã hàng",
+            how="left",
+        )
+        logger.info("Merged latest month quantities with cost data from validated summary")
+    else:
+        inventory = inventory_latest_qty if not inventory_latest_qty.empty else inventory_summary
+
     # Merge data sources
     logger.info("Merging data sources...")
     df = products.copy()
 
-    # Merge inventory
-    if "Mã hàng mới" in inventory.columns:
+    # Merge inventory by Mã hàng (from clean_inventory output)
+    if "Mã hàng" in inventory.columns and "Mã hàng" in df.columns:
+        df = df.merge(
+            inventory,
+            on="Mã hàng",
+            how="left",
+            suffixes=("", "_inventory"),
+        )
+        logger.info("Merged inventory by 'Mã hàng'")
+    elif "Mã hàng mới" in inventory.columns:
         df = df.merge(
             inventory,
             on="Mã hàng mới",
             how="left",
             suffixes=("", "_inventory"),
         )
+        logger.info("Merged inventory by 'Mã hàng mới'")
     else:
-        logger.warning("Missing 'Mã hàng mới' in inventory data")
+        logger.warning("Missing 'Mã hàng' or 'Mã hàng mới' in inventory data for merge")
 
     # Merge prices
     if "Mã hàng mới" in prices.columns:
@@ -107,8 +234,8 @@ def export_products_xlsx(
 
     logger.info(f"Merged data has {len(df)} products")
 
-    # Build template DataFrame (9 required columns)
-    logger.info("Mapping to 9-column template...")
+    # Build template DataFrame (27 columns)
+    logger.info("Mapping to 27-column template...")
     template_data = pd.DataFrame(index=df.index)
 
     # Column 1: Loại hàng (constant)
@@ -167,9 +294,9 @@ def export_products_xlsx(
     else:
         raise ValueError("Missing required column: Giá vốn")
 
-    # Column 9: Tồn kho (current stock quantity)
+    # Column 9: Tồn kho (current stock quantity from latest month)
     qty_col = None
-    for col in ["Tồn số lượng", "Tổng số lượng"]:
+    for col in ["Số lượng cuối kỳ", "Tồn số lượng", "Tổng số lượng"]:
         if col in df.columns:
             qty_col = col
             break
@@ -180,7 +307,61 @@ def export_products_xlsx(
     else:
         raise ValueError("Missing required column: Stock quantity")
 
-    logger.info(f"Template DataFrame has {len(template_data)} rows, 9 columns")
+    # Column 10: Tồn nhỏ nhất (min stock) - leave empty
+    template_data["Tồn nhỏ nhất"] = ""
+
+    # Column 11: Tồn lớn nhất (max stock) - leave empty
+    template_data["Tồn lớn nhất"] = ""
+
+    # Column 12: ĐVT (unit of measurement) - leave empty
+    template_data["ĐVT"] = ""
+
+    # Column 13: Mã ĐVT Cơ bản (base UOM code) - leave empty
+    template_data["Mã ĐVT Cơ bản"] = ""
+
+    # Column 14: Quy đổi (conversion factor) - leave empty
+    template_data["Quy đổi"] = ""
+
+    # Column 15: Thuộc tính (product attributes) - leave empty
+    template_data["Thuộc tính"] = ""
+
+    # Column 16: Mã HH Liên quan (related product IDs) - leave empty
+    template_data["Mã HH Liên quan"] = ""
+
+    # Column 17: Hình ảnh (url1,url2...) - leave empty
+    template_data["Hình ảnh (url1,url2...)"] = ""
+
+    # Column 18: Sử dụng Imei - leave empty
+    template_data["Sử dụng Imei"] = ""
+
+    # Column 19: Trọng lượng (weight) - leave empty
+    template_data["Trọng lượng"] = ""
+
+    # Column 20: Đang kinh doanh (active status) - default to 1 (active)
+    template_data["Đang kinh doanh"] = 1
+
+    # Column 21: Được bán trực tiếp (direct sale) - leave empty
+    template_data["Được bán trực tiếp"] = ""
+
+    # Column 22: Mô tả (description) - leave empty
+    template_data["Mô tả"] = ""
+
+    # Column 23: Mẫu ghi chú (note template) - leave empty
+    template_data["Mẫu ghi chú"] = ""
+
+    # Column 24: Vị trí (storage location) - leave empty
+    template_data["Vị trí"] = ""
+
+    # Column 25: Hàng thành phần (component products) - leave empty
+    template_data["Hàng thành phần"] = ""
+
+    # Column 26: Bảo hành (warranty) - leave empty
+    template_data["Bảo hành"] = ""
+
+    # Column 27: Bảo trì định kỳ (maintenance) - leave empty
+    template_data["Bảo trì định kỳ"] = ""
+
+    logger.info(f"Template DataFrame has {len(template_data)} rows, 27 columns")
 
     # Validate template
     logger.info("Validating template...")
