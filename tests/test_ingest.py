@@ -194,7 +194,12 @@ class TestRawSourcesConfiguration:
         assert (
             config["spreadsheet_id"] == "1kouZwJy8P_zZhjjn49Lfbp3KN81mhHADV7VKDhv5xkM"
         )
-        assert config["sheet_name"] == "CONG NO HANG NGAY - MỚI"
+        assert "sheets" in config
+        assert isinstance(config["sheets"], list)
+        assert len(config["sheets"]) == 2
+        sheet_names = [s["name"] for s in config["sheets"]]
+        assert "TỔNG CÔNG NỢ" in sheet_names
+        assert "Thong tin KH" in sheet_names
 
     def test_payable_config(self):
         """Verify payable configuration."""
@@ -203,7 +208,12 @@ class TestRawSourcesConfiguration:
         assert (
             config["spreadsheet_id"] == "1b4LWWyfddfiMZWnFreTyC-epo17IR4lcbUnPpLW8X00"
         )
-        assert config["sheet_name"] == "BC CÔNG NỢ NCC"
+        assert "sheets" in config
+        assert isinstance(config["sheets"], list)
+        assert len(config["sheets"]) == 2
+        sheet_names = [s["name"] for s in config["sheets"]]
+        assert "MÃ CTY" in sheet_names
+        assert "TỔNG HỢP" in sheet_names
 
     def test_cashflow_config(self):
         """Verify cashflow configuration."""
@@ -212,4 +222,9 @@ class TestRawSourcesConfiguration:
         assert (
             config["spreadsheet_id"] == "1OZ0cdEob37H8z0lGEI4gCet10ox5DgjO6u4wsQL29Ag"
         )
-        assert config["sheet_name"] == "SỔ QUỸ TIỀN MẶT + NGÂN HÀNG - 2025"
+        assert "sheets" in config
+        assert isinstance(config["sheets"], list)
+        assert len(config["sheets"]) == 2
+        sheet_names = [s["name"] for s in config["sheets"]]
+        assert "Tiền gửi" in sheet_names
+        assert "Tien mat" in sheet_names
