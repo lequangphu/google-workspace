@@ -650,18 +650,20 @@ def create_reconciliation_checkpoint(
     # Step 4: Get lineage summary
     lineage_data = lineage.summary()
 
-    # Step 5: Build file-by-file dropout breakdown
+    # Step 5: Build file-by-file dropout breakdown (only files with dropout > 0)
     file_dropout = {}
     for filename in sorted(input_totals.keys()):
         input_qty = input_totals[filename]
         output_qty = output_by_file.get(filename, 0)
         dropout_pct = (input_qty - output_qty) / input_qty * 100 if input_qty > 0 else 0
-        file_dropout[filename] = {
-            "input_quantity": float(input_qty),
-            "output_quantity": float(output_qty),
-            "dropout_quantity": float(input_qty - output_qty),
-            "dropout_pct": float(dropout_pct),
-        }
+        # Only include files with actual dropout
+        if dropout_pct > 0:
+            file_dropout[filename] = {
+                "input_quantity": float(input_qty),
+                "output_quantity": float(output_qty),
+                "dropout_quantity": float(input_qty - output_qty),
+                "dropout_pct": float(dropout_pct),
+            }
 
     # Step 6: Build reconciliation report
     total_input_qty = sum(input_totals.values())
@@ -672,18 +674,10 @@ def create_reconciliation_checkpoint(
         "input": {
             "total_quantity": float(total_input_qty),
             "total_rows": int(total_input_rows),
-            "files": dict(input_totals),
         },
         "output": {
             "total_quantity": float(output_total_qty),
             "total_rows": int(output_row_count),
-        },
-        "dropout_by_file": file_dropout,
-        "lineage": {
-            "total_tracked": lineage_data["total"],
-            "success": lineage_data["success"],
-            "rejected": lineage_data["rejected"],
-            "success_rate": lineage_data["success_rate"],
         },
         "reconciliation": {
             "quantity_dropout_pct": (
@@ -696,6 +690,13 @@ def create_reconciliation_checkpoint(
                 if total_input_rows > 0
                 else 0
             ),
+        },
+        "dropout_by_file": file_dropout,
+        "lineage": {
+            "total_tracked": lineage_data["total"],
+            "success": lineage_data["success"],
+            "rejected": lineage_data["rejected"],
+            "success_rate": lineage_data["success_rate"],
         },
         "alerts": [],
     }
@@ -878,7 +879,7 @@ def transform_purchase_receipts(
     # Save lineage audit trail (ADR-5)
     logger.info("=" * 70)
     logger.info("Saving data lineage audit trail")
-    lineage_filepath = lineage.save()
+    lineage.save()
     lineage_summary = lineage.summary()
     logger.info(
         f"Lineage saved: Total={lineage_summary['total']}, "

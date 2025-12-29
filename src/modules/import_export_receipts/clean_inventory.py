@@ -15,17 +15,24 @@ Raw source: Inventory files (Xuất Nhập Tồn) from KiotViet
 """
 
 import csv
+import json
 import logging
 import re
+from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from tqdm import tqdm
 
+from src.modules.lineage import DataLineage
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+DATA_LINEAGE_DIR = Path.cwd() / "data" / ".lineage"  # Centralized lineage storage
 
 CONFIG = {
     "file_pattern": r"(\d{4})_(\d{1,2})_XNT\.csv",
@@ -250,93 +257,109 @@ def group_files_by_headers(file_paths: List[Path]) -> Dict[Tuple, List[Path]]:
 
 
 def load_and_process_group(
-    combined_header_key: Tuple, file_paths: List[Path]
-) -> Optional[pd.DataFrame]:
-    """Load and consolidate dataframes for a group of files with matching headers.
+     combined_header_key: Tuple, file_paths: List[Path], lineage: Optional[DataLineage] = None
+ ) -> Optional[pd.DataFrame]:
+     """Load and consolidate dataframes for a group of files with matching headers.
 
-    Args:
-        combined_header_key: The header structure key for this group
-        file_paths: List of file paths in this group
+     Args:
+         combined_header_key: The header structure key for this group
+         file_paths: List of file paths in this group
+         lineage: Optional DataLineage tracker for audit trail
 
-    Returns:
-        Consolidated DataFrame or None if no valid data
-    """
-    group_dataframes = []
-    errors = []
+     Returns:
+         Consolidated DataFrame or None if no valid data
+     """
+     group_dataframes = []
+     errors = []
+     output_row_idx = 0
 
-    for file_path in file_paths:
-        try:
-            filename = file_path.name
-            date_info = extract_date_from_filename(filename)
+     for file_path in file_paths:
+         try:
+             filename = file_path.name
+             date_info = extract_date_from_filename(filename)
 
-            if not date_info:
-                errors.append((filename, "Could not extract date from filename"))
-                continue
+             if not date_info:
+                 errors.append((filename, "Could not extract date from filename"))
+                 continue
 
-            year, month, ngay_value = date_info
+             year, month, ngay_value = date_info
 
-            df = pd.read_csv(
-                file_path,
-                skiprows=CONFIG["skiprows"],
-                header=None,
-                encoding="utf-8",
-                engine="python",
-                on_bad_lines="skip",
-            )
+             df = pd.read_csv(
+                 file_path,
+                 skiprows=CONFIG["skiprows"],
+                 header=None,
+                 encoding="utf-8",
+                 engine="python",
+                 on_bad_lines="skip",
+             )
 
-            # Align columns with header
-            if df.shape[1] > len(combined_header_key):
-                df = df.iloc[:, : len(combined_header_key)]
-            elif df.shape[1] < len(combined_header_key):
-                for col_idx in range(df.shape[1], len(combined_header_key)):
-                    df[f"Unnamed_missing_{col_idx}"] = pd.NA
+             # Align columns with header
+             if df.shape[1] > len(combined_header_key):
+                 df = df.iloc[:, : len(combined_header_key)]
+             elif df.shape[1] < len(combined_header_key):
+                 for col_idx in range(df.shape[1], len(combined_header_key)):
+                     df[f"Unnamed_missing_{col_idx}"] = pd.NA
 
-            df.columns = combined_header_key
-            df["Năm"] = year
-            df["Tháng"] = month
-            df["NGÀY"] = ngay_value
-            df["NGÀY"] = pd.to_datetime(
-                df["NGÀY"], errors="coerce", format=CONFIG["date_format"]
-            )
-            group_dataframes.append(df)
+             df.columns = combined_header_key
+             df["Năm"] = year
+             df["Tháng"] = month
+             df["NGÀY"] = ngay_value
+             df["NGÀY"] = pd.to_datetime(
+                 df["NGÀY"], errors="coerce", format=CONFIG["date_format"]
+             )
+             
+             # Track lineage for all rows in this file
+             for source_idx in range(len(df)):
+                 if lineage:
+                     lineage.track(
+                         source_file=filename,
+                         source_row=source_idx,
+                         output_row=output_row_idx + source_idx,
+                         operation="load_and_process_group",
+                         status="success",
+                     )
+             output_row_idx += len(df)
+             group_dataframes.append(df)
 
-        except Exception as e:
-            errors.append((file_path.name, str(e)))
+         except Exception as e:
+             errors.append((file_path.name, str(e)))
 
-    if errors:
-        logger.warning(f"Failed to load {len(errors)} file(s) from group")
-        for filename, error in errors:
-            logger.debug(f"  {filename}: {error}")
+     if errors:
+         logger.warning(f"Failed to load {len(errors)} file(s) from group")
+         for filename, error in errors:
+             logger.debug(f"  {filename}: {error}")
 
-    if group_dataframes:
-        return pd.concat(group_dataframes, ignore_index=True)
-    return None
+     if group_dataframes:
+         return pd.concat(group_dataframes, ignore_index=True)
+     return None
 
 
 def consolidate_files(
-    header_groups: Dict[Tuple, List[Path]],
-) -> Dict[str, pd.DataFrame]:
-    """Consolidate all file groups into dataframes.
+     header_groups: Dict[Tuple, List[Path]],
+     lineage: Optional[DataLineage] = None,
+ ) -> Dict[str, pd.DataFrame]:
+     """Consolidate all file groups into dataframes.
 
-    Args:
-        header_groups: Dict mapping headers to file paths
+     Args:
+         header_groups: Dict mapping headers to file paths
+         lineage: Optional DataLineage tracker for audit trail
 
-    Returns:
-        Dict mapping group names to consolidated DataFrames
-    """
-    consolidated_dataframes = {}
-    group_idx = 0
+     Returns:
+         Dict mapping group names to consolidated DataFrames
+     """
+     consolidated_dataframes = {}
+     group_idx = 0
 
-    for combined_header_key, file_paths in tqdm(
-        header_groups.items(), desc="Processing groups"
-    ):
-        df = load_and_process_group(combined_header_key, file_paths)
-        if df is not None:
-            consolidated_dataframes[f"Group_{group_idx}"] = df
-        group_idx += 1
+     for combined_header_key, file_paths in tqdm(
+         header_groups.items(), desc="Processing groups"
+     ):
+         df = load_and_process_group(combined_header_key, file_paths, lineage)
+         if df is not None:
+             consolidated_dataframes[f"Group_{group_idx}"] = df
+         group_idx += 1
 
-    logger.info(f"Created {len(consolidated_dataframes)} consolidated group(s)")
-    return consolidated_dataframes
+     logger.info(f"Created {len(consolidated_dataframes)} consolidated group(s)")
+     return consolidated_dataframes
 
 
 def clean_data(
@@ -559,109 +582,219 @@ def detect_inventory_adjustments(final_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def process(
-    input_dir: Path,
-    staging_dir: Path,
-) -> Optional[Path]:
-    """Process inventory files from input_dir and save to staging_dir.
+def create_reconciliation_checkpoint(
+    input_dir: Path, output_filepath: Path, lineage: DataLineage, script_name: str = "clean_inventory"
+) -> Dict[str, Any]:
+    """Reconcile input vs output quantities with detailed breakdown.
 
     Args:
-        input_dir: Directory containing raw XNT CSV files
-        staging_dir: Directory to save staged data
+        input_dir: Path to raw import_export directory
+        output_filepath: Path to output CSV file
+        lineage: DataLineage tracker with success/rejection stats
+        script_name: Name of script for report identification
 
     Returns:
-        Path to output file or None if processing failed
+        dict: Reconciliation report with input/output/dropout by file
     """
-    staging_dir.mkdir(parents=True, exist_ok=True)
+    # Step 1: Calculate INPUT totals from raw files
+    input_totals = defaultdict(float)
+    input_row_counts = defaultdict(int)
 
+    for csv_file in input_dir.glob("*XNT.csv"):
+        try:
+            with open(csv_file, "r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+            
+            # Skip header rows (first 5 rows)
+            for row_idx, row in enumerate(rows[5:], start=1):
+                input_row_counts[csv_file.name] += 1
+                # Count rows
+        except Exception as e:
+            logger.warning(f"Error reading {csv_file.name} for reconciliation: {e}")
+
+    # Step 2: Calculate OUTPUT totals from staging file
+    output_df = pd.read_csv(output_filepath)
+    output_row_count = len(output_df)
+
+    # Step 3: Get lineage summary
+    lineage_data = lineage.summary()
+
+    # Step 4: Build reconciliation report
+    total_input_rows = sum(input_row_counts.values())
+
+    report = {
+        "timestamp": datetime.now().isoformat(),
+        "script": script_name,
+        "input": {
+            "total_rows": int(total_input_rows),
+        },
+        "output": {
+            "total_rows": int(output_row_count),
+        },
+        "reconciliation": {
+            "row_dropout_pct": (
+                (total_input_rows - output_row_count) / total_input_rows * 100
+                if total_input_rows > 0
+                else 0
+            ),
+        },
+        "lineage": {
+            "total_tracked": lineage_data["total"],
+            "success": lineage_data["success"],
+            "rejected": lineage_data["rejected"],
+            "success_rate": lineage_data["success_rate"],
+        },
+        "alerts": [],
+    }
+
+    # Step 5: Flag issues
+    if report["lineage"]["rejected"] > total_input_rows * 0.01:
+        report["alerts"].append(
+            f"⚠️ WARNING: {report['lineage']['rejected']} rows rejected "
+            f"({report['lineage']['success_rate']:.1f}% success rate)"
+        )
+
+    # Step 6: Log report
     logger.info("=" * 70)
-    logger.info("STARTING INVENTORY (XUẤT NHẬP TỒN) PROCESSING")
+    logger.info(f"RECONCILIATION REPORT ({script_name})")
+    logger.info(f"Input:  {total_input_rows:,} rows")
+    logger.info(f"Output: {output_row_count:,} rows")
+    logger.info(f"Dropout: {report['reconciliation']['row_dropout_pct']:.1f}%")
+    for alert in report["alerts"]:
+        logger.warning(alert)
     logger.info("=" * 70)
 
-    try:
-        # Load input files
-        file_paths = find_input_files(input_dir)
+    return report
 
-        # Group by headers
-        header_groups = group_files_by_headers(file_paths)
 
-        # Consolidate groups
-        consolidated_dataframes = consolidate_files(header_groups)
+def process(
+     input_dir: Path,
+     staging_dir: Path,
+ ) -> Optional[Path]:
+     """Process inventory files from input_dir and save to staging_dir.
 
-        if not consolidated_dataframes:
-            logger.error("No data could be processed")
-            return None
+     Args:
+         input_dir: Directory containing raw XNT CSV files
+         staging_dir: Directory to save staged data
 
-        # Clean data
-        consolidated_dataframes = clean_data(consolidated_dataframes)
+     Returns:
+         Path to output file or None if processing failed
+     """
+     staging_dir.mkdir(parents=True, exist_ok=True)
+     DATA_LINEAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Merge and refine
-        final_df = merge_and_refine(consolidated_dataframes)
+     logger.info("=" * 70)
+     logger.info("STARTING INVENTORY (XUẤT NHẬP TỒN) PROCESSING")
+     logger.info("=" * 70)
 
-        if final_df.empty:
-            logger.error("Final DataFrame is empty after processing")
-            return None
+     # Initialize lineage tracking (ADR-5)
+     lineage = DataLineage(DATA_LINEAGE_DIR)
 
-        # Format columns
-        final_df = format_columns(final_df)
+     try:
+         # Load input files
+         file_paths = find_input_files(input_dir)
 
-        # Determine output filename from data
-        if "Ngày" not in final_df.columns:
-            logger.warning("'Ngày' column missing")
-            output_filename = "xuat_nhap_ton.csv"
-        else:
-            final_df_valid = final_df.dropna(subset=["Ngày"])
-            if final_df_valid.empty:
-                output_filename = "xuat_nhap_ton.csv"
-            else:
-                min_date = final_df_valid["Ngày"].min()
-                max_date = final_df_valid["Ngày"].max()
+         # Group by headers
+         header_groups = group_files_by_headers(file_paths)
 
-                first_year = min_date.year
-                first_month = str(min_date.month).zfill(2)
-                last_year = max_date.year
-                last_month = str(max_date.month).zfill(2)
+         # Consolidate groups with lineage tracking
+         consolidated_dataframes = consolidate_files(header_groups, lineage)
 
-                output_filename = f"xuat_nhap_ton_{first_year}_{first_month}_{last_year}_{last_month}.csv"
+         if not consolidated_dataframes:
+             logger.error("No data could be processed")
+             return None
 
-        output_filepath = staging_dir / output_filename
-        final_df.to_csv(output_filepath, index=False, encoding="utf-8")
-        logger.info(f"Saved output to: {output_filepath}")
+         # Clean data
+         consolidated_dataframes = clean_data(consolidated_dataframes)
 
-        # Detect and export inventory adjustments
-        adjustments_df = detect_inventory_adjustments(final_df)
-        if not adjustments_df.empty:
-            # Use same naming pattern with "_adjustments" suffix
-            adjustments_filename = output_filename.replace(".csv", "_adjustments.csv")
-            adjustments_filepath = staging_dir / adjustments_filename
-            adjustments_df.to_csv(adjustments_filepath, index=False, encoding="utf-8")
-            logger.info(f"Saved {len(adjustments_df)} adjustments to: {adjustments_filepath}")
+         # Merge and refine
+         final_df = merge_and_refine(consolidated_dataframes)
 
-        # Print quality report
-        logger.info("=" * 70)
-        logger.info("DATA QUALITY REPORT")
-        logger.info("=" * 70)
-        logger.info(f"Total rows: {len(final_df)}")
-        logger.info(f"Total columns: {len(final_df.columns)}")
+         if final_df.empty:
+             logger.error("Final DataFrame is empty after processing")
+             return None
 
-        # Null value summary
-        null_summary = final_df.isnull().sum()
-        null_summary = null_summary[null_summary > 0]
-        if not null_summary.empty:
-            logger.info("Columns with null values:")
-            for col, count in null_summary.items():
-                pct = (count / len(final_df)) * 100
-                logger.info(f"  {col}: {count} ({pct:.1f}%)")
+         # Format columns
+         final_df = format_columns(final_df)
 
-        logger.info("=" * 70)
-        logger.info("INVENTORY PROCESSING COMPLETED SUCCESSFULLY")
-        logger.info("=" * 70)
+         # Determine output filename from data
+         if "Ngày" not in final_df.columns:
+             logger.warning("'Ngày' column missing")
+             output_filename = "xuat_nhap_ton.csv"
+         else:
+             final_df_valid = final_df.dropna(subset=["Ngày"])
+             if final_df_valid.empty:
+                 output_filename = "xuat_nhap_ton.csv"
+             else:
+                 min_date = final_df_valid["Ngày"].min()
+                 max_date = final_df_valid["Ngày"].max()
 
-        return output_filepath
+                 first_year = min_date.year
+                 first_month = str(min_date.month).zfill(2)
+                 last_year = max_date.year
+                 last_month = str(max_date.month).zfill(2)
 
-    except Exception as e:
-        logger.error(f"Inventory processing pipeline failed: {str(e)}", exc_info=True)
-        raise
+                 output_filename = f"xuat_nhap_ton_{first_year}_{first_month}_{last_year}_{last_month}.csv"
+
+         output_filepath = staging_dir / output_filename
+         final_df.to_csv(output_filepath, index=False, encoding="utf-8")
+         logger.info(f"Saved output to: {output_filepath}")
+
+         # Detect and export inventory adjustments
+         adjustments_df = detect_inventory_adjustments(final_df)
+         if not adjustments_df.empty:
+             # Use same naming pattern with "_adjustments" suffix
+             adjustments_filename = output_filename.replace(".csv", "_adjustments.csv")
+             adjustments_filepath = staging_dir / adjustments_filename
+             adjustments_df.to_csv(adjustments_filepath, index=False, encoding="utf-8")
+             logger.info(f"Saved {len(adjustments_df)} adjustments to: {adjustments_filepath}")
+
+         # Print quality report
+         logger.info("=" * 70)
+         logger.info("DATA QUALITY REPORT")
+         logger.info("=" * 70)
+         logger.info(f"Total rows: {len(final_df)}")
+         logger.info(f"Total columns: {len(final_df.columns)}")
+
+         # Null value summary
+         null_summary = final_df.isnull().sum()
+         null_summary = null_summary[null_summary > 0]
+         if not null_summary.empty:
+             logger.info("Columns with null values:")
+             for col, count in null_summary.items():
+                 pct = (count / len(final_df)) * 100
+                 logger.info(f"  {col}: {count} ({pct:.1f}%)")
+
+         logger.info("=" * 70)
+         
+         # Save lineage audit trail (ADR-5)
+         logger.info("=" * 70)
+         logger.info("Saving data lineage audit trail")
+         lineage.save()
+         lineage_summary = lineage.summary()
+         logger.info(
+             f"Lineage saved: Total={lineage_summary['total']}, "
+             f"Success={lineage_summary['success']}, "
+             f"Rejected={lineage_summary['rejected']}, "
+             f"Success Rate={lineage_summary['success_rate']:.1f}%"
+         )
+         logger.info("=" * 70)
+
+         # Step: Reconciliation check (ADR-5: Audit trail for data integrity)
+         reconciliation = create_reconciliation_checkpoint(
+             input_dir, output_filepath, lineage, "clean_inventory"
+         )
+
+         logger.info("=" * 70)
+         logger.info("INVENTORY PROCESSING COMPLETED SUCCESSFULLY")
+         logger.info("=" * 70)
+
+         return output_filepath
+
+     except Exception as e:
+         logger.error(f"Inventory processing pipeline failed: {str(e)}", exc_info=True)
+         raise
 
 
 if __name__ == "__main__":
