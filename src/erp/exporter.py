@@ -22,11 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 def _load_inventory_with_latest_month(inventory_path: Path) -> pd.DataFrame:
-    """Load inventory data and extract latest month's ending quantities.
+    """Load inventory data and extract latest month's ending quantities and unit costs.
 
     Reads clean_inventory.py output (which contains multiple months) and
-    extracts the "Số lượng cuối kỳ" (ending quantity) from the latest month
-    for each product.
+    extracts the "Số lượng cuối kỳ" (ending quantity) and "Đơn giá cuối kỳ"
+    (ending unit price) from the latest month for each product.
 
     If the primary inventory_path is a validated summary, attempts to load
     the clean_inventory staging file instead.
@@ -35,7 +35,7 @@ def _load_inventory_with_latest_month(inventory_path: Path) -> pd.DataFrame:
         inventory_path: Path to inventory CSV (validated or staging clean_inventory output)
 
     Returns:
-        DataFrame with product codes and latest month's ending quantities
+        DataFrame with product codes, latest month's ending quantities, and unit costs
     """
     # First, try the provided path
     if inventory_path.exists():
@@ -55,10 +55,12 @@ def _load_inventory_with_latest_month(inventory_path: Path) -> pd.DataFrame:
             # Extract latest month for each product
             latest_inventory = df.loc[df.groupby("Mã hàng")["Ngày"].idxmax()]
 
-            # Create new DataFrame with mapping from Mã hàng to Số lượng cuối kỳ
+            # Create new DataFrame with mapping from Mã hàng to Số lượng cuối kỳ and Đơn giá cuối kỳ
             result = pd.DataFrame()
             result["Mã hàng"] = latest_inventory["Mã hàng"]
             result["Số lượng cuối kỳ"] = latest_inventory["Số lượng cuối kỳ"]
+            if "Đơn giá cuối kỳ" in latest_inventory.columns:
+                result["Đơn giá cuối kỳ"] = latest_inventory["Đơn giá cuối kỳ"]
 
             logger.info(
                 f"Extracted latest month inventory for {len(result)} unique products"
@@ -105,10 +107,16 @@ def _load_inventory_with_latest_month(inventory_path: Path) -> pd.DataFrame:
                             staging_df.groupby("Mã hàng")["Ngày"].idxmax()
                         ]
 
-                        # Create new DataFrame with mapping from Mã hàng to Số lượng cuối kỳ
+                        # Create new DataFrame with mapping from Mã hàng to Số lượng cuối kỳ and Đơn giá cuối kỳ
                         result = pd.DataFrame()
                         result["Mã hàng"] = latest_inventory["Mã hàng"]
-                        result["Số lượng cuối kỳ"] = latest_inventory["Số lượng cuối kỳ"]
+                        result["Số lượng cuối kỳ"] = latest_inventory[
+                            "Số lượng cuối kỳ"
+                        ]
+                        if "Đơn giá cuối kỳ" in latest_inventory.columns:
+                            result["Đơn giá cuối kỳ"] = latest_inventory[
+                                "Đơn giá cuối kỳ"
+                            ]
 
                         logger.info(
                             f"Extracted latest month inventory for {len(result)} unique products"
@@ -171,16 +179,32 @@ def export_products_xlsx(
     logger.info(f"Loading enrichment from {enrichment_path}")
     enrichment = pd.read_csv(enrichment_path)
 
-    # Merge latest quantity from clean_inventory with cost from validated summary
-    if not inventory_latest_qty.empty and not inventory_summary.empty:
-        inventory = inventory_latest_qty.merge(
-            inventory_summary[["Mã hàng", "Giá vốn"]],
-            on="Mã hàng",
-            how="left",
-        )
-        logger.info("Merged latest month quantities with cost data from validated summary")
+    # Merge latest quantity and unit cost from clean_inventory
+    # If unit cost not available from clean_inventory, fall back to validated summary
+    if not inventory_latest_qty.empty:
+        inventory = inventory_latest_qty.copy()
+
+        # If Đơn giá cuối kỳ (unit cost) is present, rename to Giá vốn
+        if "Đơn giá cuối kỳ" in inventory.columns:
+            inventory["Giá vốn"] = inventory["Đơn giá cuối kỳ"]
+            logger.info(
+                "Using latest month's Đơn giá cuối kỳ as Giá vốn from clean_inventory"
+            )
+        else:
+            # Fall back to validated summary for cost if not in clean_inventory
+            if not inventory_summary.empty:
+                inventory = inventory.merge(
+                    inventory_summary[["Mã hàng", "Giá vốn"]],
+                    on="Mã hàng",
+                    how="left",
+                )
+                logger.info(
+                    "Using Giá vốn from validated summary (Đơn giá cuối kỳ not in clean_inventory)"
+                )
     else:
-        inventory = inventory_latest_qty if not inventory_latest_qty.empty else inventory_summary
+        # Fallback: use validated summary
+        inventory = inventory_summary
+        logger.info("Using validated inventory summary (clean_inventory not available)")
 
     # Merge data sources
     logger.info("Merging data sources...")
