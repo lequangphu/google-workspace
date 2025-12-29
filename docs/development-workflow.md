@@ -1,3 +1,9 @@
+---
+globs:
+  - 'src/**/*.py'
+  - 'tests/**/*.py'
+---
+
 # Development Workflow – Git, Commits & Pre-commit Checklist
 
 ## Git Versioning & Commits

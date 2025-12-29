@@ -3,6 +3,8 @@
 **Updated**: December 2025  
 **Context**: ~120k tokens → use economically. Load only files you need.
 
+See @docs/*.md for detailed reference on project structure, workflows, and architecture.
+
 ## 1. Absolute Rules – Failure if broken
 
 ### Tooling – ONLY these commands
@@ -82,18 +84,7 @@ src/modules/
 - `data/02-validated/` ← Ready for export
 - `data/03-erp-export/` ← Final XLSX only
 
-## 4. Recommended Reading Order
-
-1. **This file** (AGENTS.md) for rules
-2. **project-description.md** for business context + raw sources
-3. **docs/pipeline-io.md** for complete input/output reference
-4. **docs/erp-mapping.md** for KiotViet column details (when needed)
-5. **docs/development-workflow.md** for git/commits (when committing)
-6. **docs/manifest-caching.md** for ingestion optimization (when tuning performance)
-7. **docs/refactoring-roadmap.md** for migration status (rarely needed)
-8. **docs/architecture-decisions.md** for design rationales (rarely needed)
-
-## 5. Common Tasks (Quick Start)
+## 4. Common Tasks (Quick Start)
 
 ### Run full pipeline
 ```bash
@@ -118,9 +109,9 @@ uv run ruff check src/
 2. Create matching test file
 3. Pass all tests
 4. Mark old script as deprecated
-5. Commit with clear message (see docs/development-workflow.md)
+5. Commit with clear message (see @docs/development-workflow.md)
 
-## 6. External Data Sources (critical)
+## 5. External Data Sources (critical)
 
 **Product lookup** (enrichment):
 - URL: https://docs.google.com/spreadsheets/d/16bGN2gjWspCqlFD4xB--7WtkYtTpDaWzRQx9sV97ed8/edit?gid=23224859
@@ -132,7 +123,3 @@ uv run ruff check src/
 - See `data/README.md` for staging pattern + folder organization
 - Never write directly to `data/03-erp-export/`
 - Use `DataLineage` class to track every row through pipeline
-
----
-
-**For detailed reference** (KiotViet columns, git workflow, ADRs), see `docs/` folder.

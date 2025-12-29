@@ -1,3 +1,11 @@
+---
+globs:
+  - 'src/erp/**/*.py'
+  - 'src/modules/**/*.py'
+  - 'tests/test_templates.py'
+  - 'tests/test_exporter.py'
+---
+
 # ERP Mapping – KiotViet Templates & Column Details
 
 Reference for all columns required in each KiotViet import template. Use for validation and field mapping.

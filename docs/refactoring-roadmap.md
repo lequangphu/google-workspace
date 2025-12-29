@@ -1,3 +1,9 @@
+---
+globs:
+  - 'src/modules/**/*.py'
+  - 'legacy/**/*.py'
+---
+
 # Refactoring Roadmap – Legacy Script Migration Status
 
 Legacy scripts are being refactored into raw source modules for better organization and AI agent context efficiency.

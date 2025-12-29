@@ -1,3 +1,10 @@
+---
+globs:
+  - 'src/modules/**/*.py'
+  - 'src/pipeline/**/*.py'
+  - 'src/services/**/*.py'
+---
+
 # Pipeline Input/Output Reference
 
 Complete mapping of all scripts, their inputs, outputs, and storage locations.

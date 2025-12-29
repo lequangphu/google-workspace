@@ -1,3 +1,9 @@
+---
+globs:
+  - 'src/modules/google_api.py'
+  - 'src/modules/ingest.py'
+---
+
 # Manifest Caching System
 
 ## Overview

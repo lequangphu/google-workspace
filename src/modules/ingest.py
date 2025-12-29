@@ -9,9 +9,10 @@ Handles 4 raw sources from project_description.md:
 
 import logging
 import sys
+import tomllib
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.modules.google_api import (
     clear_manifest,
@@ -31,59 +32,40 @@ from src.modules.google_api import (
 
 logger = logging.getLogger(__name__)
 
-# Output directory for raw CSV files (data/00-raw/)
-RAW_DATA_DIR = Path("data/00-raw")
 
-# Raw data sources configuration from project_description.md
-# Folder IDs extracted from shared folder URLs (project_description.md lines 8-14)
-# Note: Folder 7 is scanned first as it contains the most recent/active import_export sheets
-IMPORT_EXPORT_FOLDER_IDS = [
-    "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj",  # Folder 7 (also has receivable, payable, cashflow)
-    "1Q2-P4aeJfKEVuT69akFHcgrxMsB2mrrU",  # Folder 5
-    "1SYlk8Uztzd8asEZp6SK1yfF-EL0-t_sc",  # Folder 4
-    "1p4XXU0nOsJc2Rr2_vJa3YluqmjPtzWRo",  # Folder 3
-    "1ZJY7aJ-eRdoqYA1NE9ByfHeiYnxq1cFZ",  # Folder 2
-    "1QIP6LCr6lANzzRnAZPmVg7wIWdUmhs6q",  # Folder 6
-    "1RbkY2dd1IaqSHhnivjh6iejKv9mpkSJ_",  # Folder 1
-]
+def load_pipeline_config() -> Dict[str, Any]:
+    """Load pipeline configuration from pipeline.toml (ADR-1: Configuration-Driven).
 
+    Returns:
+        Dict with dirs, pipeline, sources, and enrichment config.
+
+    Raises:
+        FileNotFoundError: If pipeline.toml not found.
+    """
+    config_path = Path("pipeline.toml")
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"pipeline.toml not found at {config_path.resolve()}. "
+            "See AGENTS.md and docs/architecture-decisions.md#adr-1 for setup."
+        )
+    with open(config_path, "rb") as f:
+        return tomllib.load(f)
+
+
+# Load config once at module import (ADR-1: Config-driven, not hardcoded)
+_CONFIG = load_pipeline_config()
+RAW_DATA_DIR = Path(_CONFIG["dirs"]["raw_data"])
 RAW_SOURCES = {
-    "import_export_receipts": {
-        "type": "folder",
-        "folder_ids": IMPORT_EXPORT_FOLDER_IDS,
-        "tabs": ["CT.NHAP", "CT.XUAT", "XNT"],
-        "output_subdir": "import_export",
-    },
-    "receivable": {
-        "type": "spreadsheet",
-        "spreadsheet_id": "1kouZwJy8P_zZhjjn49Lfbp3KN81mhHADV7VKDhv5xkM",
-        "sheets": [
-            {"name": "TỔNG CÔNG NỢ", "output_file": "receivable_summary"},
-            {"name": "Thong tin KH", "output_file": "receivable_customers"},
-        ],
-        "output_subdir": "receivable",
-        "description": "Receivable: customer debt ledger + customer info",
-    },
-    "payable": {
-        "type": "spreadsheet",
-        "spreadsheet_id": "1b4LWWyfddfiMZWnFreTyC-epo17IR4lcbUnPpLW8X00",
-        "sheets": [
-            {"name": "MÃ CTY", "output_file": "payable_master"},
-            {"name": "TỔNG HỢP", "output_file": "payable_summary"},
-        ],
-        "output_subdir": "payable",
-        "description": "Payable: supplier master + debt ledger",
-    },
-    "cashflow": {
-        "type": "spreadsheet",
-        "spreadsheet_id": "1OZ0cdEob37H8z0lGEI4gCet10ox5DgjO6u4wsQL29Ag",
-        "sheets": [
-            {"name": "Tiền gửi", "output_file": "cashflow_deposits"},
-            {"name": "Tien mat", "output_file": "cashflow_cash"},
-        ],
-        "output_subdir": "cashflow",
-        "description": "CashFlow: deposits and cash transactions",
-    },
+    source_key: {
+        "type": source_config.get("type"),
+        "description": source_config.get("description", ""),
+        "folder_ids": source_config.get("folder_ids", []),
+        "spreadsheet_id": source_config.get("spreadsheet_id", ""),
+        "tabs": source_config.get("tabs", []),
+        "sheets": source_config.get("sheets", []),
+        "output_subdir": source_config.get("output_subdir", ""),
+    }
+    for source_key, source_config in _CONFIG.get("sources", {}).items()
 }
 
 

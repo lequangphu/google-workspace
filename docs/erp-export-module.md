@@ -1,3 +1,10 @@
+---
+globs:
+  - 'src/erp/**/*.py'
+  - 'tests/test_exporter.py'
+  - 'tests/test_templates.py'
+---
+
 # ERP Export Module – Templates & Exporter
 
 Documentation for the ERP integration module that exports validated data to KiotViet XLSX templates.

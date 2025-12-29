@@ -308,7 +308,6 @@ def export_tab_to_csv(
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerows(values)
-        time.sleep(API_CALL_DELAY)
         return True
     except IOError as e:
         logger.error(f"Failed to write CSV {csv_path}: {e}")
@@ -330,31 +329,6 @@ def parse_file_metadata(file_name: str) -> tuple:
         year = 2000 + int(match.group(2))
         return year, month
     return None, None
-
-
-def calculate_content_hash(csv_path: Path) -> str:
-    """Calculate SHA256 hash of CSV file content.
-
-    Args:
-        csv_path: Path to CSV file.
-
-    Returns:
-        Hex digest of SHA256 hash, or empty string if file doesn't exist.
-    """
-    import hashlib
-
-    if not csv_path.exists():
-        return ""
-
-    try:
-        sha256_hash = hashlib.sha256()
-        with open(csv_path, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
-        return sha256_hash.hexdigest()
-    except Exception as e:
-        logger.warning(f"Could not hash {csv_path}: {e}")
-        return ""
 
 
 def should_ingest_file(csv_path: Path, remote_modified_time: str) -> bool:

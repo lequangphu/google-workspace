@@ -1,3 +1,10 @@
+---
+globs:
+  - 'src/**/*.py'
+  - 'tests/**/*.py'
+  - 'pipeline.toml'
+---
+
 # Architecture Decision Records (ADRs)
 
 This document explains the "why" behind key architectural decisions.
@@ -108,25 +115,24 @@ src/
 
 ---
 
-## ADR-4: Content-Hash Caching (vs mtime)
+## ADR-4: mtime-Based Change Detection (vs Content-Hash)
 
-**Decision**: Use content-based hashing (HashCache) instead of modification time for detecting changes.
+**Decision**: Use modification time (mtime) from Google Drive to detect file changes, not content hashing.
 
 **Rationale**:
-- **Robustness**: Handles files re-downloaded with same timestamp
-- **Correctness**: Detects actual content changes, not just date changes
-- **Idempotency**: If file content unchanged, skip re-processing safely
-- **API quota**: Avoids unnecessary Drive API reads
+- **Simplicity**: No need to download + hash locally; faster ingestion
+- **API efficiency**: Compare remote mtime vs local mtime without extra API calls
+- **Practicality**: In practice, files are re-downloaded with updated timestamps
+- **Current month re-ingest**: Always re-ingest current month to catch intraday edits
 
 **Implementation**:
 ```python
-from src.services.cache import HashCache
-
-cache = HashCache(cache_file="data/.cache/hash_cache.json")
-if not cache.is_modified(file_path):
-    logger.info(f"Skipping {file_path} (content hash match)")
-    continue
+# In ingest.py, use should_ingest_file() and should_ingest_import_export()
+if should_ingest_import_export(csv_path, remote_modified_time, current_month, current_year):
+    export_tab_to_csv(sheets_service, file_id, tab, csv_path)
 ```
+
+**Trade-off**: If files are corrected retroactively without timestamp update, we won't detect the change. Acceptable risk.
 
 ---
 
@@ -172,28 +178,34 @@ for idx, row in df.iterrows():
 
 ## ADR-6: API Request Optimization (Priority Order)
 
-**Decision**: Prioritize cache → batch ops → parallel → retry when accessing Google APIs.
+**Decision**: Prioritize manifest cache → request throttling → retry when accessing Google APIs.
 
 **Rationale**:
-- **Quota management**: Google Sheets API has ~300 QPS limit; batch operations are more efficient
+- **Quota management**: Google Sheets API has ~300 QPS limit; manifest caching avoids redundant folder scans
 - **Cost**: Fewer requests = faster execution + lower quota consumption
 - **Reliability**: Proper backoff prevents rate-limit errors
+- **Simplicity**: Avoid over-engineering with parallelization until needed
 
-**Priority order** (fastest to slowest):
-1. **Cache**: Use `HashCache` (content-based, not mtime)
-2. **Batch ops**: `batchUpdate` not cell-by-cell writes
-3. **Parallel**: ThreadPoolExecutor with max_workers=5 (Drive API safe limit)
-4. **Retry**: Exponential backoff for rate limits
+**Implemented techniques** (in priority order):
+1. **Manifest cache**: Cache folder→sheets metadata for 24h (saves ~90% of folder scan API calls)
+2. **Request throttling**: `time.sleep(0.5s)` after each API call (stay under 60 QPS)
+3. **Exponential backoff**: 3x retry on 429 rate-limit errors (1s, 2s, 4s)
+4. **mtime-based skipping**: Only re-download if remote file newer than local
 
-**Rule**: If reading > 5 Google Sheets, use ThreadPoolExecutor:
+**Not implemented** (reserved for future if needed):
+- Batch operations: `batchUpdate` not cell-by-cell writes
+- Parallelization: ThreadPoolExecutor with max_workers=5 (Drive API safe limit)
+
 ```python
-from concurrent.futures import ThreadPoolExecutor
-
-client = GoogleSheetsClient(creds, max_workers=5)
-results = client.read_multiple_ranges_parallel(
-    spreadsheet_id,
-    ["Sheet1!A:Z", "Sheet2!A:Z", "Sheet3!A:Z"]
-)
+# Example: manifest cache usage in ingest.py (lines 191-200)
+# Functions implemented in google_api.py (lines 34-123)
+cached_sheets, is_fresh = get_cached_sheets_for_folder(manifest, folder_id)
+if cached_sheets is not None:
+    sheets = cached_sheets
+    api_calls_saved += 1
+else:
+    sheets = find_sheets_in_folder(drive_service, folder_id)
+    update_manifest_for_folder(manifest, folder_id, sheets)
 ```
 
 ---
