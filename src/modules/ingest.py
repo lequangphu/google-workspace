@@ -18,16 +18,13 @@ from src.modules.google_api import (
     clear_manifest,
     connect_to_drive,
     export_tab_to_csv,
-    find_sheets_in_folder,
     find_year_folders,
-    get_cached_sheets_for_folder,
     get_sheet_tabs,
+    get_sheets_for_folder,
     load_manifest,
     parse_file_metadata,
-    read_sheet_data,
     save_manifest,
     should_ingest_import_export,
-    update_manifest_for_folder,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,39 +64,6 @@ RAW_SOURCES = {
     }
     for source_key, source_config in _CONFIG.get("sources", {}).items()
 }
-
-
-def ingest_direct_spreadsheet(
-    sheets_service, spreadsheet_id: str, sheet_name: str, output_path: Path
-) -> bool:
-    """Ingest a single direct spreadsheet (receivable, payable, cashflow).
-
-    Args:
-        sheets_service: Google Sheets API service.
-        spreadsheet_id: ID of the spreadsheet.
-        sheet_name: Name of the sheet tab.
-        output_path: Path to save CSV.
-
-    Returns:
-        True if successful, False otherwise.
-    """
-    values = read_sheet_data(sheets_service, spreadsheet_id, sheet_name)
-    if not values:
-        logger.warning(f"No data in {sheet_name}")
-        return False
-
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", newline="", encoding="utf-8") as f:
-            import csv
-
-            writer = csv.writer(f)
-            writer.writerows(values)
-        logger.info(f"Exported {output_path}")
-        return True
-    except IOError as e:
-        logger.error(f"Failed to write {output_path}: {e}")
-        return False
 
 
 def ingest_from_drive(
@@ -169,17 +133,13 @@ def ingest_from_drive(
             """Process all sheets in a folder, using manifest cache when available."""
             nonlocal files_ingested, tabs_processed, api_calls_saved
 
-            # Try to get cached sheets first
-            cached_sheets, is_fresh = get_cached_sheets_for_folder(manifest, folder_id)
-            if cached_sheets is not None:
-                sheets = cached_sheets
-                api_calls_saved += 1
+            # Get sheets (cached if fresh, else from Drive API)
+            sheets, calls_saved = get_sheets_for_folder(
+                manifest, drive_service, folder_id
+            )
+            api_calls_saved += calls_saved
+            if calls_saved > 0:
                 logger.debug(f"{source_name}: Using cached sheets (saved 1 API call)")
-            else:
-                # Not cached or stale, fetch from Drive
-                sheets = find_sheets_in_folder(drive_service, folder_id)
-                if sheets:
-                    update_manifest_for_folder(manifest, folder_id, sheets)
 
             if not sheets:
                 logger.debug(f"No sheets found in {source_name}")
@@ -256,7 +216,7 @@ def ingest_from_drive(
                 sheet_name = sheet_info["name"]
                 output_file = sheet_info["output_file"]
                 csv_path = RAW_DATA_DIR / output_subdir / f"{output_file}.csv"
-                if ingest_direct_spreadsheet(
+                if export_tab_to_csv(
                     sheets_service, spreadsheet_id, sheet_name, csv_path
                 ):
                     files_ingested += 1
@@ -265,7 +225,7 @@ def ingest_from_drive(
             sheet_name = source_config.get("sheet_name")
             if sheet_name:
                 csv_path = RAW_DATA_DIR / output_subdir / f"{source_key}.csv"
-                if ingest_direct_spreadsheet(
+                if export_tab_to_csv(
                     sheets_service, spreadsheet_id, sheet_name, csv_path
                 ):
                     files_ingested += 1
@@ -286,16 +246,109 @@ def ingest_from_drive(
 
 
 if __name__ == "__main__":
+    import argparse
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(levelname)-8s %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
-    # Parse command line arguments for debugging/admin tasks
-    if len(sys.argv) > 1 and sys.argv[1] == "--clear-cache":
+    parser = argparse.ArgumentParser(
+        description="Ingest Google Sheets data to raw CSV files.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run all sources (default)
+  uv run src/modules/ingest.py
+  
+  # Run only receivable and payable
+  uv run src/modules/ingest.py --only receivable,payable
+  
+  # Skip import_export_receipts
+  uv run src/modules/ingest.py --skip import_export_receipts
+  
+  # Skip multiple sources
+  uv run src/modules/ingest.py --skip import_export_receipts,payable
+  
+  # Clear cache and run all sources
+  uv run src/modules/ingest.py --clear-cache
+  
+Available sources: {}
+        """.format(", ".join(sorted(RAW_SOURCES.keys()))),
+    )
+
+    parser.add_argument(
+        "--only",
+        type=str,
+        default=None,
+        help="Comma-separated list of sources to ingest (e.g., receivable,payable)",
+    )
+    parser.add_argument(
+        "--skip",
+        type=str,
+        default=None,
+        help="Comma-separated list of sources to skip (e.g., import_export_receipts)",
+    )
+    parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Clear manifest cache before ingestion",
+    )
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="Stop after downloading one of each tab type",
+    )
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Remove existing data/00-raw/ directory first",
+    )
+
+    args = parser.parse_args()
+
+    # Handle conflicting options
+    if args.only and args.skip:
+        logger.error("Cannot use both --only and --skip simultaneously")
+        sys.exit(1)
+
+    # Determine sources to ingest
+    sources_to_ingest = None
+
+    if args.only:
+        # Parse --only flag
+        requested_sources = [s.strip() for s in args.only.split(",")]
+        invalid_sources = [s for s in requested_sources if s not in RAW_SOURCES]
+        if invalid_sources:
+            logger.error(
+                f"Invalid sources: {invalid_sources}. "
+                f"Available: {', '.join(sorted(RAW_SOURCES.keys()))}"
+            )
+            sys.exit(1)
+        sources_to_ingest = requested_sources
+        logger.info(f"Ingesting only: {', '.join(sources_to_ingest)}")
+
+    elif args.skip:
+        # Parse --skip flag
+        skip_sources = [s.strip() for s in args.skip.split(",")]
+        invalid_sources = [s for s in skip_sources if s not in RAW_SOURCES]
+        if invalid_sources:
+            logger.error(
+                f"Invalid sources to skip: {invalid_sources}. "
+                f"Available: {', '.join(sorted(RAW_SOURCES.keys()))}"
+            )
+            sys.exit(1)
+        sources_to_ingest = [s for s in RAW_SOURCES.keys() if s not in skip_sources]
+        logger.info(f"Skipping: {', '.join(skip_sources)}")
+        logger.info(f"Ingesting: {', '.join(sources_to_ingest)}")
+
+    # Clear cache if requested
+    if args.clear_cache:
         logger.info("Clearing manifest cache...")
         clear_manifest()
-        sys.exit(0)
 
-    ingest_from_drive(test_mode=False, clean_up=False)
+    # Run ingestion
+    ingest_from_drive(
+        sources=sources_to_ingest, test_mode=args.test_mode, clean_up=args.cleanup
+    )

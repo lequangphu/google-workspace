@@ -7,6 +7,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional, TypedDict
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -15,6 +16,29 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
+
+
+class SheetMetadata(TypedDict):
+    """Sheet info from Google Drive API."""
+
+    id: str
+    name: str
+    modifiedTime: str
+
+
+class FolderEntry(TypedDict):
+    """Single folder entry in manifest cache."""
+
+    scanned_at: str
+    sheets: list[SheetMetadata]
+
+
+class Manifest(TypedDict):
+    """Root manifest cache structure."""
+
+    version: int
+    folders: dict[str, FolderEntry]
+
 
 # Manifest cache file location
 MANIFEST_PATH = Path("data/.drive_manifest.json")
@@ -31,11 +55,11 @@ SCOPES = [
 ]
 
 
-def load_manifest() -> dict:
+def load_manifest() -> Manifest:
     """Load folder→sheets manifest from cache.
 
     Returns:
-        Dict with structure: {"folders": {folder_id: {"scanned_at": iso_ts, "sheets": [...]}}}.
+        Manifest dict with structure: {"version": 1, "folders": {folder_id: {...}}}.
     """
     if MANIFEST_PATH.exists():
         try:
@@ -46,7 +70,7 @@ def load_manifest() -> dict:
     return {"version": 1, "folders": {}}
 
 
-def save_manifest(manifest: dict) -> None:
+def save_manifest(manifest: Manifest) -> None:
     """Save manifest to cache file.
 
     Args:
@@ -78,7 +102,9 @@ def is_manifest_stale(scanned_at_iso: str) -> bool:
         return True  # If unparseable, treat as stale
 
 
-def get_cached_sheets_for_folder(manifest: dict, folder_id: str) -> tuple:
+def get_cached_sheets_for_folder(
+    manifest: Manifest, folder_id: str
+) -> tuple[Optional[list[SheetMetadata]], bool]:
     """Get cached sheets for a folder if fresh, else None.
 
     Args:
@@ -98,13 +124,15 @@ def get_cached_sheets_for_folder(manifest: dict, folder_id: str) -> tuple:
     return folder_entry.get("sheets", []), True
 
 
-def update_manifest_for_folder(manifest: dict, folder_id: str, sheets: list) -> None:
+def update_manifest_for_folder(
+    manifest: Manifest, folder_id: str, sheets: list[SheetMetadata]
+) -> None:
     """Update manifest with freshly scanned folder data.
 
     Args:
         manifest: Manifest dict to update (modified in place).
         folder_id: ID of folder.
-        sheets: List of sheet dicts (id, name, modifiedTime).
+        sheets: List of sheet metadata dicts.
     """
     if "folders" not in manifest:
         manifest["folders"] = {}
@@ -113,6 +141,32 @@ def update_manifest_for_folder(manifest: dict, folder_id: str, sheets: list) -> 
         "scanned_at": datetime.now(timezone.utc).isoformat(),
         "sheets": sheets,
     }
+
+
+def get_sheets_for_folder(manifest: Manifest, drive_service, folder_id: str) -> tuple:
+    """Get sheets for a folder, using cache if fresh, else fetch from Drive.
+
+    Handles caching automatically. If cache is fresh, returns cached sheets and
+    reports API call saved. If stale or missing, queries Drive API and updates manifest.
+
+    Args:
+        manifest: Manifest dict (modified in place if fetching fresh data).
+        drive_service: Google Drive API service object.
+        folder_id: ID of folder to scan.
+
+    Returns:
+        Tuple of (sheets_list, api_calls_saved: int).
+            sheets_list is list[SheetMetadata], api_calls_saved is 0 or 1.
+    """
+    cached_sheets, is_fresh = get_cached_sheets_for_folder(manifest, folder_id)
+    if cached_sheets is not None:
+        return cached_sheets, 1  # Cache hit, saved 1 API call
+
+    # Not cached or stale, fetch from Drive API
+    sheets = find_sheets_in_folder(drive_service, folder_id)
+    if sheets:
+        update_manifest_for_folder(manifest, folder_id, sheets)
+    return sheets, 0  # API call made
 
 
 def clear_manifest() -> None:
@@ -289,6 +343,8 @@ def export_tab_to_csv(
 ) -> bool:
     """Export a sheet tab to a CSV file.
 
+    Reads sheet data and writes to CSV with logging. Handles directory creation.
+
     Args:
         sheets_service: Google Sheets API service object.
         spreadsheet_id: ID of the spreadsheet.
@@ -306,8 +362,8 @@ def export_tab_to_csv(
     try:
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerows(values)
+            csv.writer(f).writerows(values)
+        logger.info(f"Exported {csv_path}")
         return True
     except IOError as e:
         logger.error(f"Failed to write CSV {csv_path}: {e}")

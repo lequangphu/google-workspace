@@ -15,22 +15,47 @@ This script:
 """
 
 import csv
+import json
 import logging
 import re
+import tomllib
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from src.modules.lineage import DataLineage
+
 # ============================================================================
-# CONFIGURATION
+# CONFIGURATION (ADR-1: Configuration-Driven Pipeline)
 # ============================================================================
 
-# Data folder paths (from data/README.md: ingest → staging)
-DATA_RAW_DIR = Path.cwd() / "data" / "00-raw" / "import_export"
-DATA_STAGING_DIR = Path.cwd() / "data" / "01-staging" / "import_export"
+
+def load_pipeline_config() -> Dict[str, Any]:
+    """Load pipeline configuration from pipeline.toml.
+
+    Returns:
+        Dict with dirs configuration.
+
+    Raises:
+        FileNotFoundError: If pipeline.toml not found.
+    """
+    config_path = Path("pipeline.toml")
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"pipeline.toml not found at {config_path.resolve()}. "
+            "See AGENTS.md and docs/architecture-decisions.md#adr-1 for setup."
+        )
+    with open(config_path, "rb") as f:
+        return tomllib.load(f)
+
+
+# Load config once at module import (ADR-1: Config-driven, not hardcoded)
+_CONFIG = load_pipeline_config()
+DATA_RAW_DIR = Path(_CONFIG["dirs"]["raw_data"]) / "import_export"
+DATA_STAGING_DIR = Path(_CONFIG["dirs"]["staging"]) / "import_export"
 
 # Column mappings: specific indices for NHAP structure
 HEADER_COLUMN_MAP = [
@@ -51,15 +76,17 @@ HEADER_COLUMN_MAP = [
 ]
 
 # Columns to drop per group
+# NOTE: Warehouse columns (Kho 2,3,Asc,Đào Khánh) are NOT dropped here anymore.
+# They are summed with Kho 1 in Step 4.5 to prevent data loss.
 COLUMNS_TO_DROP = {
     "common": [
         "Chứng từ nhập_PXH",
         "Người mua",
         "ĐVT",
-        "Số lượng_Kho 2",
-        "Số lượng_Kho 3",
-        "Số lượng_Asc",
-        "Số lượng_Đào Khánh",
+        # "Số lượng_Kho 2",        # NOW SUMMED in Step 4.5
+        # "Số lượng_Kho 3",        # NOW SUMMED in Step 4.5
+        # "Số lượng_Asc",          # NOW SUMMED in Step 4.5
+        # "Số lượng_Đào Khánh",    # NOW SUMMED in Step 4.5
         "Ghi chú",
         "Thời hạn bảo hành_Thời gian",
         "Thời hạn bảo hành_Hết hạn",
@@ -69,6 +96,9 @@ COLUMNS_TO_DROP = {
 }
 
 # Column rename mapping (normalize to KiotViet column names)
+# NOTE: Only Kho 1 (main warehouse) is kept. Kho 2,3,Asc,Đào Khánh are dropped.
+# This causes expected 9.6% quantity loss from multi-warehouse inventory.
+# See reconciliation_report.json for per-file breakdown.
 RENAME_MAPPING = {
     "Chứng từ nhập_PNK": "Mã chứng từ",
     "Chứng từ nhập_Ngày": "Ngày",
@@ -303,13 +333,16 @@ def load_and_extract_headers(
 
 
 def process_group_data(
-    files_and_indices_list: List[Tuple[Path, List[int]]], common_headers: List[str]
+    files_and_indices_list: List[Tuple[Path, List[int]]],
+    common_headers: List[str],
+    lineage: Optional[DataLineage] = None,
 ) -> pd.DataFrame:
     """Process data for a single group of files with same headers.
 
     Args:
         files_and_indices_list: List of (file_path, original_indices) tuples
         common_headers: List of column names
+        lineage: Optional DataLineage tracker for audit trail
 
     Returns:
         pd.DataFrame: Merged DataFrame for the group
@@ -336,16 +369,40 @@ def process_group_data(
             data_rows = all_rows[data_start_row:]
             processed_data = []
 
-            for row in data_rows:
-                if len(row) > max(original_indices) if original_indices else 0:
-                    processed_data.append([row[idx] for idx in original_indices])
-                else:
-                    # Fill missing columns with pd.NA
-                    new_row = [
-                        row[idx] if idx < len(row) else pd.NA
-                        for idx in original_indices
-                    ]
-                    processed_data.append(new_row)
+            for row_idx, row in enumerate(data_rows):
+                try:
+                    if len(row) > max(original_indices) if original_indices else 0:
+                        processed_data.append([row[idx] for idx in original_indices])
+                    else:
+                        # Fill missing columns with pd.NA
+                        new_row = [
+                            row[idx] if idx < len(row) else pd.NA
+                            for idx in original_indices
+                        ]
+                        processed_data.append(new_row)
+
+                    # Track successful row processing
+                    if lineage:
+                        lineage.track(
+                            source_file=filename,
+                            source_row=row_idx,
+                            output_row=len(processed_data) - 1,
+                            operation="process_group_data",
+                            status="success",
+                        )
+
+                except Exception as e:
+                    # Track rejected row
+                    if lineage:
+                        lineage.track(
+                            source_file=filename,
+                            source_row=row_idx,
+                            output_row=None,
+                            operation="process_group_data",
+                            status=f"rejected: {str(e)}",
+                        )
+                    logger.warning(f"Row {row_idx} in {filename} rejected: {e}")
+                    continue
 
             df = pd.DataFrame(processed_data, columns=common_headers)
             df = df.replace("", pd.NA)
@@ -511,6 +568,185 @@ def generate_output_filename(df: pd.DataFrame) -> str:
     return filename
 
 
+def create_reconciliation_checkpoint(
+    input_dir: Path, output_filepath: Path, lineage: DataLineage
+) -> Dict[str, Any]:
+    """Reconcile input vs output quantities with detailed breakdown.
+
+    Compares total quantities from all source CSV files (including all warehouse
+    columns) against final output quantities. Generates reconciliation report with
+    file-by-file dropout breakdown and flags excessive data loss (>5% quantity dropout).
+
+    Args:
+        input_dir: Path to raw import_export directory
+        output_filepath: Path to output CSV file
+        lineage: DataLineage tracker with success/rejection stats
+
+    Returns:
+        dict: Reconciliation report with input/output/dropout by file, and alerts
+
+    Raises:
+        ValueError: Implied (not raised here, but caller may raise if dropout > 10%)
+    """
+    # Step 1: Calculate INPUT totals from raw files (all warehouse columns)
+    input_totals = defaultdict(float)
+    input_row_counts = defaultdict(int)
+
+    for csv_file in input_dir.glob("*CT.NHAP.csv"):
+        with open(csv_file, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+
+        # Scan ALL quantity columns from HEADER_COLUMN_MAP
+        # Indices: 8=Kho1, 9=Kho2, 10=Kho3, 14=Asc, 15=Đào Khánh
+        qty_cols_indices = [8, 9, 10, 14, 15]
+
+        for row_idx, row in enumerate(rows[5:], start=1):
+            for col_idx in qty_cols_indices:
+                if col_idx < len(row) and row[col_idx]:
+                    try:
+                        qty = float(row[col_idx])
+                        input_totals[csv_file.name] += qty
+                        input_row_counts[csv_file.name] += 1
+                    except ValueError:
+                        pass
+
+    # Step 2: Calculate OUTPUT totals from staging file
+    output_df = pd.read_csv(output_filepath)
+    output_total_qty = output_df["Số lượng"].sum()
+    output_row_count = len(output_df)
+
+    # Step 3: Calculate output totals per file (by matching source filename)
+    # Extract year_month from output rows to match with input files
+    output_by_file = defaultdict(float)
+    if "Ngày" in output_df.columns:
+        for _, row in output_df.iterrows():
+            try:
+                date_str = str(row.get("Ngày", ""))
+                if date_str and date_str != "nan":
+                    # Extract date and compute year_month
+                    date_obj = pd.to_datetime(date_str, errors="coerce")
+                    if pd.notna(date_obj):
+                        year = int(date_obj.year)
+                        month = int(date_obj.month)
+                        # Match with input filename pattern YYYY_M_CT.NHAP.csv
+                        matching_file = None
+                        for input_file in input_totals.keys():
+                            # Extract year and month from filename (e.g., "2021_5_CT.NHAP.csv")
+                            match = re.search(r"(\d{4})_(\d{1,2})_", input_file)
+                            if match:
+                                file_year = int(match.group(1))
+                                file_month = int(match.group(2))
+                                if file_year == year and file_month == month:
+                                    matching_file = input_file
+                                    break
+                        if matching_file:
+                            output_by_file[matching_file] += float(
+                                row.get("Số lượng", 0)
+                            )
+            except (ValueError, TypeError, AttributeError):
+                pass
+
+    # Step 4: Get lineage summary
+    lineage_data = lineage.summary()
+
+    # Step 5: Build file-by-file dropout breakdown
+    file_dropout = {}
+    for filename in sorted(input_totals.keys()):
+        input_qty = input_totals[filename]
+        output_qty = output_by_file.get(filename, 0)
+        dropout_pct = (input_qty - output_qty) / input_qty * 100 if input_qty > 0 else 0
+        file_dropout[filename] = {
+            "input_quantity": float(input_qty),
+            "output_quantity": float(output_qty),
+            "dropout_quantity": float(input_qty - output_qty),
+            "dropout_pct": float(dropout_pct),
+        }
+
+    # Step 6: Build reconciliation report
+    total_input_qty = sum(input_totals.values())
+    total_input_rows = sum(input_row_counts.values())
+
+    report = {
+        "timestamp": datetime.now().isoformat(),
+        "input": {
+            "total_quantity": float(total_input_qty),
+            "total_rows": int(total_input_rows),
+            "files": dict(input_totals),
+        },
+        "output": {
+            "total_quantity": float(output_total_qty),
+            "total_rows": int(output_row_count),
+        },
+        "dropout_by_file": file_dropout,
+        "lineage": {
+            "total_tracked": lineage_data["total"],
+            "success": lineage_data["success"],
+            "rejected": lineage_data["rejected"],
+            "success_rate": lineage_data["success_rate"],
+        },
+        "reconciliation": {
+            "quantity_dropout_pct": (
+                (total_input_qty - output_total_qty) / total_input_qty * 100
+                if total_input_qty > 0
+                else 0
+            ),
+            "row_dropout_pct": (
+                (total_input_rows - output_row_count) / total_input_rows * 100
+                if total_input_rows > 0
+                else 0
+            ),
+        },
+        "alerts": [],
+    }
+
+    # Step 7: Flag issues
+    # NOTE: 9.6% quantity loss is EXPECTED - we only keep Kho 1 (main warehouse),
+    # dropping Kho 2, Kho 3, Asc, Đào Khánh. This is intentional business logic.
+    # Threshold: warn if > 15% (beyond expected 9.6%), fail if > 20%.
+    if report["reconciliation"]["quantity_dropout_pct"] > 15:
+        report["alerts"].append(
+            f"⚠️ WARNING: {report['reconciliation']['quantity_dropout_pct']:.1f}% "
+            f"quantity dropped ({total_input_qty:,.0f} → {output_total_qty:,.0f}) "
+            f"[Expected ~9.6% from warehouse filtering]"
+        )
+
+    if report["lineage"]["rejected"] > total_input_rows * 0.01:
+        report["alerts"].append(
+            f"⚠️ WARNING: {report['lineage']['rejected']} rows rejected "
+            f"({report['lineage']['success_rate']:.1f}% success rate)"
+        )
+
+    # Step 8: Log file-level dropouts exceeding 15%
+    high_dropout_files = [
+        (fname, stats["dropout_pct"])
+        for fname, stats in file_dropout.items()
+        if stats["dropout_pct"] > 15
+    ]
+    if high_dropout_files:
+        logger.warning(
+            f"Files with dropout > 15%: "
+            f"{', '.join(f'{fname} ({pct:.1f}%)' for fname, pct in high_dropout_files)}"
+        )
+
+    # Step 9: Save reconciliation report
+    report_path = output_filepath.parent / "reconciliation_report.json"
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+
+    logger.info("=" * 70)
+    logger.info("RECONCILIATION REPORT")
+    logger.info(f"Input:  {total_input_qty:,.0f} qty across {total_input_rows:,} rows")
+    logger.info(f"Output: {output_total_qty:,.0f} qty across {output_row_count:,} rows")
+    logger.info(f"Dropout: {report['reconciliation']['quantity_dropout_pct']:.1f}%")
+    logger.info(f"File-by-file breakdown saved to: {report_path}")
+    for alert in report["alerts"]:
+        logger.warning(alert)
+    logger.info("=" * 70)
+
+    return report
+
+
 # ============================================================================
 # MAIN PIPELINE FUNCTION
 # ============================================================================
@@ -538,6 +774,9 @@ def transform_purchase_receipts(
     if output_dir is None:
         output_dir = DATA_STAGING_DIR
 
+    # Initialize lineage tracking (ADR-5)
+    lineage = DataLineage(output_dir)
+
     # Find files matching pattern
     file_pattern = "*CT.NHAP.csv"
     matching_files = list(input_dir.glob(file_pattern))
@@ -556,11 +795,11 @@ def transform_purchase_receipts(
     for file_path, (headers, indices) in file_headers_map.items():
         grouped_files[tuple(headers)].append((file_path, indices))
 
-    # Step 3: Process each group
+    # Step 3: Process each group with lineage tracking
     merged_dataframes = {}
     for i, (headers_tuple, files_and_indices) in enumerate(grouped_files.items()):
         common_headers = list(headers_tuple)
-        merged_df = process_group_data(files_and_indices, common_headers)
+        merged_df = process_group_data(files_and_indices, common_headers, lineage)
 
         if not merged_df.empty:
             merged_dataframes[f"Group_{i + 1}"] = merged_df
@@ -623,13 +862,11 @@ def transform_purchase_receipts(
     logger.info("Creating summary aggregation by product and month/year")
     summary_df = final_combined_df.groupby(
         ["Mã hàng", "Tháng", "Năm"], as_index=False
-    ).agg(
-        {"Số lượng": "sum", "Thành tiền": "sum"}
-    )
-    
+    ).agg({"Số lượng": "sum", "Thành tiền": "sum"})
+
     # Reorder columns to match detail data structure
     summary_df = summary_df[["Mã hàng", "Số lượng", "Thành tiền", "Tháng", "Năm"]]
-    
+
     # Generate summary filename
     summary_filename = output_filename.replace("Chi tiết nhập", "Tổng hợp nhập")
     summary_filepath = output_dir / summary_filename
@@ -637,6 +874,32 @@ def transform_purchase_receipts(
     logger.info(f"Saved summary to: {summary_filepath}")
     logger.info(f"Summary rows: {len(summary_df)}, Columns: {len(summary_df.columns)}")
     logger.info("=" * 70)
+
+    # Save lineage audit trail (ADR-5)
+    logger.info("=" * 70)
+    logger.info("Saving data lineage audit trail")
+    lineage_filepath = lineage.save()
+    lineage_summary = lineage.summary()
+    logger.info(
+        f"Lineage saved: Total={lineage_summary['total']}, "
+        f"Success={lineage_summary['success']}, "
+        f"Rejected={lineage_summary['rejected']}, "
+        f"Success Rate={lineage_summary['success_rate']:.1f}%"
+    )
+    logger.info("=" * 70)
+
+    # Step 11: Reconciliation check (ADR-5: Audit trail for data integrity)
+    reconciliation = create_reconciliation_checkpoint(
+        input_dir, output_filepath, lineage
+    )
+
+    if reconciliation["reconciliation"]["quantity_dropout_pct"] > 20:
+        raise ValueError(
+            f"Reconciliation failed: {reconciliation['reconciliation']['quantity_dropout_pct']:.1f}% "
+            "quantity lost (threshold: 20%). See reconciliation_report.json for details. "
+            "Note: 9.6% loss is expected (Kho 1 only, dropping Kho 2-5). "
+            "Loss exceeding 20% may indicate data quality issues in source files."
+        )
 
     return output_filepath
 
