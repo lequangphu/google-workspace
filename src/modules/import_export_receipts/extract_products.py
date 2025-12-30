@@ -33,8 +33,8 @@ CONFIG = {
     "staging_dir": Path.cwd() / "data" / "01-staging" / "import_export",
     "validated_dir": Path.cwd() / "data" / "02-validated",
     "report_dir": Path.cwd() / "data" / "reports",
-    "nhap_pattern": "*nhập*.csv",
-    "xuat_pattern": "*xuất*.csv",
+    "nhap_pattern": "Chi tiết nhập*.csv",
+    "xuat_pattern": "Chi tiết xuất*.csv",
     "product_file": "product_info.csv",
     "nhap_summary_file": "summary_purchase.csv",
     "xuat_summary_file": "summary_sale.csv",
@@ -43,6 +43,7 @@ CONFIG = {
     "xuat_price_file": "price_sale.csv",
     "gross_profit_file": "gross_profit.csv",
     "enrichment_file": "enrichment.csv",
+    "revenue_profit_file": "revenue_profit_nhom_thuong_hieu.csv",
     # Google Sheets product lookup (external data source)
     "product_lookup_spreadsheet_id": "16bGN2gjWspCqlFD4xB--7WtkYtTpDaWzRQx9sV97ed8",
     "product_lookup_sheet_name": "Nhóm hàng, thương hiệu",
@@ -211,10 +212,10 @@ def get_sort_key(group: pd.DataFrame) -> Tuple:
 def fetch_product_lookup() -> pd.DataFrame:
     """Fetch product lookup data from Google Sheets.
 
-    Loads Mã hàng, Nhóm hàng(3 Cấp), and Thương hiệu from external Google Sheets.
+    Loads Mã hàng, Nhóm hàng(3 Cấp), Thương hiệu, and optionally Tên hàng from external Google Sheets.
 
     Returns:
-        DataFrame with columns: Mã hàng, Nhóm hàng(3 Cấp), Thương hiệu
+        DataFrame with columns: Mã hàng, Nhóm hàng(3 Cấp), Thương hiệu, Tên hàng (if available)
         Returns empty DataFrame if fetch fails
     """
     try:
@@ -239,7 +240,18 @@ def fetch_product_lookup() -> pd.DataFrame:
 
         # First row is header
         headers = values[0]
-        data_rows = values[1:]
+        num_cols = len(headers)
+
+        # Ensure all data rows have same number of columns
+        data_rows = []
+        for row in values[1:]:
+            # Slice to match header length if row is longer
+            # Pad with empty strings if row is shorter
+            if len(row) > num_cols:
+                row = row[:num_cols]
+            elif len(row) < num_cols:
+                row = row + [""] * (num_cols - len(row))
+            data_rows.append(row)
 
         # Create DataFrame
         lookup_df = pd.DataFrame(data_rows, columns=headers)
@@ -253,9 +265,16 @@ def fetch_product_lookup() -> pd.DataFrame:
             return pd.DataFrame()
 
         # Clean data: strip whitespace, handle empty values
-        for col in required_cols:
+        # Include Tên hàng if present (optional column)
+        cols_to_clean = required_cols.copy()
+        if "Tên hàng" in lookup_df.columns:
+            cols_to_clean.append("Tên hàng")
+            logger.info("Found 'Tên hàng' column in Google Sheets lookup")
+
+        for col in cols_to_clean:
             lookup_df[col] = lookup_df[col].astype(str).str.strip()
-            lookup_df.loc[lookup_df[col].isin(["", "None"]), col] = ""
+            # Replace empty strings with NaN for proper fillna behavior
+            lookup_df.loc[lookup_df[col].isin(["", "None"]), col] = pd.NA
 
         # Remove duplicate Mã hàng, keep first occurrence
         lookup_df = lookup_df.drop_duplicates(subset=["Mã hàng"], keep="first")
@@ -271,41 +290,90 @@ def fetch_product_lookup() -> pd.DataFrame:
 def enrich_product_data(
     product_info_df: pd.DataFrame, lookup_df: pd.DataFrame
 ) -> pd.DataFrame:
-    """Merge product info with lookup data to enrich Nhóm hàng and Thương hiệu.
+    """Merge product info with lookup data to enrich Nhóm hàng, Thương hiệu, Nhóm cha, Nhóm con, Tên hàng.
 
     Args:
-        product_info_df: DataFrame with Mã hàng mới, Mã hàng, Tên hàng
-        lookup_df: DataFrame with Mã hàng, Nhóm hàng(3 Cấp), Thương hiệu
+        product_info_df: DataFrame with Mã hàng mới, Mã hàng (Tên hàng is NOT included)
+        lookup_df: DataFrame with Mã hàng, Nhóm hàng(3 Cấp), Thương hiệu, Nhóm cha, Nhóm con, Tên hàng
 
     Returns:
         DataFrame with enriched columns, or product_info with placeholders if lookup fails
     """
     if lookup_df.empty:
         logger.warning("Product lookup is empty, using placeholder values")
-        enrichment_df = product_info_df[["Mã hàng", "Tên hàng"]].copy()
+        enrichment_df = product_info_df[["Mã hàng"]].copy()
+        enrichment_df["Tên hàng"] = ""
         enrichment_df["Nhóm hàng(3 Cấp)"] = "Chưa phân loại"
         enrichment_df["Thương hiệu"] = "Chưa xác định"
-        return enrichment_df[["Mã hàng", "Nhóm hàng(3 Cấp)", "Thương hiệu"]]
+        enrichment_df["Nhóm cha"] = ""
+        enrichment_df["Nhóm con"] = ""
+        return enrichment_df[
+            [
+                "Mã hàng",
+                "Tên hàng",
+                "Nhóm hàng(3 Cấp)",
+                "Thương hiệu",
+                "Nhóm cha",
+                "Nhóm con",
+            ]
+        ]
 
-    # Merge on Mã hàng
+    # Prepare lookup columns - include Tên hàng (always if available in lookup)
+    lookup_cols = [
+        "Mã hàng",
+        "Nhóm hàng(3 Cấp)",
+        "Thương hiệu",
+        "Nhóm cha",
+        "Nhóm con",
+    ]
+    has_lookup_ten_hang = "Tên hàng" in lookup_df.columns
+    if has_lookup_ten_hang:
+        lookup_cols.append("Tên hàng")
+        logger.info(
+            "Using Google Sheets 'Tên hàng' column as primary source for products.xlsx"
+        )
+
+    # Merge on Mã hàng (product_info only has Mã hàng, no Tên hàng)
     enrichment_df = product_info_df[["Mã hàng"]].copy()
     enrichment_df = enrichment_df.merge(
-        lookup_df[["Mã hàng", "Nhóm hàng(3 Cấp)", "Thương hiệu"]],
+        lookup_df[lookup_cols],
         on="Mã hàng",
         how="left",
+        suffixes=("", "_lookup"),
     )
+
+    # If Google Sheets has Tên hàng, use it (replace any lookup suffix)
+    if has_lookup_ten_hang and "Tên hàng_lookup" in enrichment_df.columns:
+        # Replace empty strings with NaN
+        enrichment_df["Tên hàng"] = enrichment_df["Tên hàng_lookup"].replace("", pd.NA)
+        enrichment_df = enrichment_df.drop(columns=["Tên hàng_lookup"])
+
+    # If no Tên hàng in lookup, set to empty
+    if "Tên hàng" not in enrichment_df.columns:
+        enrichment_df["Tên hàng"] = ""
 
     # Fill missing values with placeholders
     enrichment_df["Nhóm hàng(3 Cấp)"] = enrichment_df["Nhóm hàng(3 Cấp)"].fillna(
         "Chưa phân loại"
     )
     enrichment_df["Thương hiệu"] = enrichment_df["Thương hiệu"].fillna("Chưa xác định")
+    enrichment_df["Nhóm cha"] = enrichment_df["Nhóm cha"].fillna("")
+    enrichment_df["Nhóm con"] = enrichment_df["Nhóm con"].fillna("")
 
     matched = enrichment_df["Nhóm hàng(3 Cấp)"].ne("Chưa phân loại").sum()
     total = len(enrichment_df)
     logger.info(f"Enriched {matched}/{total} products with lookup data")
 
-    return enrichment_df[["Mã hàng", "Nhóm hàng(3 Cấp)", "Thương hiệu"]]
+    return enrichment_df[
+        [
+            "Mã hàng",
+            "Tên hàng",
+            "Nhóm hàng(3 Cấp)",
+            "Thương hiệu",
+            "Nhóm cha",
+            "Nhóm con",
+        ]
+    ]
 
 
 def process_nhap_data(staging_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -328,15 +396,14 @@ def process_nhap_data(staging_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
     grouped = df.groupby("Mã hàng", as_index=False)
 
     # Build product info
+    # Note: Tên hàng is NOT extracted here; it will be sourced from Google Sheets lookup
     products = []
     for ma_hang, group in grouped:
-        ten_hang = get_longest_name(group)
         aggregates = aggregate_by_year(group)
         sort_key = get_sort_key(group)
 
         product_info = {
             "Mã hàng": ma_hang,
-            "Tên hàng": ten_hang,
             **aggregates,
             "_sort_key": sort_key,
         }
@@ -351,8 +418,9 @@ def process_nhap_data(staging_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
     product_df["Mã hàng mới"] = [f"HH{i + 1:06d}" for i in range(len(product_df))]
 
     # Split into two outputs
-    # 1. Product info: Mã hàng mới | Mã hàng | Tên hàng
-    product_info_df = product_df[["Mã hàng mới", "Mã hàng", "Tên hàng"]].copy()
+    # 1. Product info: Mã hàng mới | Mã hàng
+    #    Note: Tên hàng is NOT included; it will be sourced from Google Sheets
+    product_info_df = product_df[["Mã hàng mới", "Mã hàng"]].copy()
 
     # 2. Summary: Mã hàng mới | Mã hàng | Tổng số lượng | Tổng thành tiền (overall totals only)
     summary_cols = ["Mã hàng mới", "Mã hàng", "Tổng số lượng", "Tổng thành tiền"]
@@ -788,9 +856,8 @@ def process_gross_profit_data(
     logger.info("Calculating gross profit (Lãi gộp) data with FIFO costing")
     logger.info("=" * 70)
 
-    # Create mappings of Mã hàng
+    # Create mapping of Mã hàng
     ma_hang_mapping = product_info_df.set_index("Mã hàng")["Mã hàng mới"].to_dict()
-    ten_hang_mapping = product_info_df.set_index("Mã hàng")["Tên hàng"].to_dict()
 
     # Prepare data
     nhap_df = nhap_df.copy()
@@ -848,7 +915,6 @@ def process_gross_profit_data(
             {
                 "Mã hàng mới": ma_hang_mapping.get(ma_hang, ""),
                 "Mã hàng": ma_hang,
-                "Tên hàng": ten_hang_mapping.get(ma_hang, ""),
                 "Tổng doanh thu": total_revenue,
                 "Giá vốn FIFO": cogs_fifo,
                 "Lãi gộp": lai_gop,
@@ -864,6 +930,270 @@ def process_gross_profit_data(
 
     logger.info(f"Calculated gross profit for {len(profit_df)} products")
     return profit_df
+
+
+def calculate_cogs_per_transaction(
+    nhap_df: pd.DataFrame,
+    xuat_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Calculate FIFO COGS for each export transaction.
+
+    Args:
+        nhap_df: Purchase transaction data
+        xuat_df: Sales transaction data
+
+    Returns:
+        Export DataFrame with additional COGS column
+    """
+    logger.info("=" * 70)
+    logger.info("Calculating FIFO COGS per export transaction")
+    logger.info("=" * 70)
+
+    nhap_df = nhap_df.copy()
+    xuat_df = xuat_df.copy()
+
+    # Parse dates and convert to numeric
+    nhap_df["Ngày"] = pd.to_datetime(nhap_df["Ngày"], errors="coerce")
+    xuat_df["Ngày"] = pd.to_datetime(xuat_df["Ngày"], errors="coerce")
+
+    for col in ["Số lượng", "Thành tiền"]:
+        nhap_df[col] = pd.to_numeric(nhap_df[col], errors="coerce")
+        xuat_df[col] = pd.to_numeric(xuat_df[col], errors="coerce")
+
+    # Group exports by product and calculate COGS
+    xuat_with_cogs = []
+
+    for ma_hang in xuat_df["Mã hàng"].unique():
+        nhap_group = nhap_df[nhap_df["Mã hàng"] == ma_hang].copy()
+        xuat_group = xuat_df[xuat_df["Mã hàng"] == ma_hang].copy()
+
+        if nhap_group.empty or xuat_group.empty:
+            for _, xuat_row in xuat_group.iterrows():
+                xuat_with_cogs.append(
+                    {
+                        "Mã hàng": ma_hang,
+                        "Số lượng": xuat_row["Số lượng"],
+                        "Thành tiền": xuat_row["Thành tiền"],
+                        "Ngày": xuat_row["Ngày"],
+                        "Năm": xuat_row.get("Năm", None),
+                        "Tháng": xuat_row.get("Tháng", None),
+                        "COGS": 0,
+                    }
+                )
+            continue
+
+        # Sort imports by date (oldest first)
+        nhap_group = nhap_group.sort_values("Ngày").reset_index(drop=True)
+        nhap_group["Đơn giá"] = nhap_group["Thành tiền"] / nhap_group["Số lượng"]
+        nhap_group["Đơn giá"] = nhap_group["Đơn giá"].replace(
+            [float("inf"), float("-inf")], 0
+        )
+
+        # Create FIFO queue for imports
+        import_queue = []
+        for _, nhap_row in nhap_group.iterrows():
+            import_queue.append(
+                {
+                    "remaining_qty": nhap_row["Số lượng"],
+                    "unit_cost": nhap_row["Đơn giá"],
+                }
+            )
+
+        # Process exports in date order
+        xuat_group = xuat_group.sort_values("Ngày").reset_index(drop=True)
+
+        for _, xuat_row in xuat_group.iterrows():
+            qty_to_sell = xuat_row["Số lượng"]
+            cogs = 0
+
+            while qty_to_sell > 0 and import_queue:
+                batch = import_queue[0]
+
+                if batch["remaining_qty"] >= qty_to_sell:
+                    cogs += qty_to_sell * batch["unit_cost"]
+                    batch["remaining_qty"] -= qty_to_sell
+                    qty_to_sell = 0
+
+                    if batch["remaining_qty"] == 0:
+                        import_queue.pop(0)
+                else:
+                    cogs += batch["remaining_qty"] * batch["unit_cost"]
+                    qty_to_sell -= batch["remaining_qty"]
+                    import_queue.pop(0)
+
+            xuat_with_cogs.append(
+                {
+                    "Mã hàng": ma_hang,
+                    "Số lượng": xuat_row["Số lượng"],
+                    "Thành tiền": xuat_row["Thành tiền"],
+                    "Ngày": xuat_row["Ngày"],
+                    "Năm": xuat_row.get("Năm", None),
+                    "Tháng": xuat_row.get("Tháng", None),
+                    "COGS": cogs,
+                }
+            )
+
+    result_df = pd.DataFrame(xuat_with_cogs)
+    logger.info(f"Calculated COGS for {len(result_df)} export transactions")
+    return result_df
+
+
+def process_revenue_profit_by_dimensions(
+    xuat_with_cogs_df: pd.DataFrame,
+    nhap_df: pd.DataFrame,
+    lookup_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Calculate revenue and gross profit by Year, Month, Nhóm hàng, Thương hiệu.
+
+    Args:
+        xuat_with_cogs_df: Export data with COGS column
+        nhap_df: Import transaction data
+        lookup_df: Product lookup with Nhóm hàng, Thương hiệu
+
+    Returns:
+        Aggregated DataFrame with revenue, COGS, gross profit, and transaction counts by dimensions
+    """
+    logger.info("=" * 70)
+    logger.info("Calculating revenue and gross profit by dimensions")
+    logger.info("=" * 70)
+
+    xuat_df = xuat_with_cogs_df.copy()
+
+    # Merge export data with lookup data
+    if not lookup_df.empty:
+        xuat_df = xuat_df.merge(
+            lookup_df[["Mã hàng", "Nhóm hàng(3 Cấp)", "Thương hiệu"]],
+            on="Mã hàng",
+            how="left",
+        )
+
+        xuat_df["Nhóm hàng(3 Cấp)"] = xuat_df["Nhóm hàng(3 Cấp)"].fillna(
+            "Chưa phân loại"
+        )
+        xuat_df["Thương hiệu"] = xuat_df["Thương hiệu"].fillna("Chưa xác định")
+    else:
+        xuat_df["Nhóm hàng(3 Cấp)"] = "Chưa phân loại"
+        xuat_df["Thương hiệu"] = "Chưa xác định"
+
+    # Convert columns to numeric
+    for col in ["Năm", "Tháng", "Thành tiền", "COGS"]:
+        xuat_df[col] = pd.to_numeric(xuat_df[col], errors="coerce")
+
+    # Calculate gross profit per transaction
+    xuat_df["Lãi gộp"] = xuat_df["Thành tiền"] - xuat_df["COGS"]
+
+    # Aggregate export data by dimensions
+    xuat_grouped = (
+        xuat_df.groupby(["Năm", "Tháng", "Nhóm hàng(3 Cấp)", "Thương hiệu"])
+        .agg(
+            {
+                "Thành tiền": "sum",
+                "COGS": "sum",
+                "Lãi gộp": "sum",
+                "Mã hàng": "count",
+            }
+        )
+        .reset_index()
+    )
+
+    # Rename columns
+    xuat_grouped.columns = [
+        "Năm",
+        "Tháng",
+        "Nhóm hàng(3 Cấp)",
+        "Thương hiệu",
+        "Tổng doanh thu",
+        "Giá vốn FIFO",
+        "Lãi gộp",
+        "Số lần xuất",
+    ]
+
+    # Prepare import data for counting
+    nhap_counts = nhap_df.copy()
+
+    # Merge import data with lookup data
+    if not lookup_df.empty:
+        nhap_counts = nhap_counts.merge(
+            lookup_df[["Mã hàng", "Nhóm hàng(3 Cấp)", "Thương hiệu"]],
+            on="Mã hàng",
+            how="left",
+        )
+
+        nhap_counts["Nhóm hàng(3 Cấp)"] = nhap_counts["Nhóm hàng(3 Cấp)"].fillna(
+            "Chưa phân loại"
+        )
+        nhap_counts["Thương hiệu"] = nhap_counts["Thương hiệu"].fillna("Chưa xác định")
+    else:
+        nhap_counts["Nhóm hàng(3 Cấp)"] = "Chưa phân loại"
+        nhap_counts["Thương hiệu"] = "Chưa xác định"
+
+    # Convert columns to numeric
+    for col in ["Năm", "Tháng"]:
+        nhap_counts[col] = pd.to_numeric(nhap_counts[col], errors="coerce")
+
+    # Count import transactions by dimensions
+    nhap_grouped = (
+        nhap_counts.groupby(["Năm", "Tháng", "Nhóm hàng(3 Cấp)", "Thương hiệu"])
+        .agg({"Mã hàng": "count"})
+        .reset_index()
+    )
+    nhap_grouped.columns = [
+        "Năm",
+        "Tháng",
+        "Nhóm hàng(3 Cấp)",
+        "Thương hiệu",
+        "Số lần nhập",
+    ]
+
+    # Merge export and import counts
+    result = xuat_grouped.merge(
+        nhap_grouped,
+        on=["Năm", "Tháng", "Nhóm hàng(3 Cấp)", "Thương hiệu"],
+        how="left",
+    )
+
+    # Fill missing import counts with 0
+    result["Số lần nhập"] = result["Số lần nhập"].fillna(0)
+
+    # Calculate margin
+    result["Biên lãi gộp (%)"] = (
+        (result["Lãi gộp"] / result["Tổng doanh thu"] * 100)
+        .where(result["Tổng doanh thu"] > 0, 0)
+        .round(2)
+    )
+
+    # Convert columns to numeric
+    for col in [
+        "Tổng doanh thu",
+        "Giá vốn FIFO",
+        "Lãi gộp",
+        "Biên lãi gộp (%)",
+        "Số lần xuất",
+        "Số lần nhập",
+    ]:
+        result[col] = pd.to_numeric(result[col], errors="coerce")
+
+    # Reorder columns
+    result = result[
+        [
+            "Năm",
+            "Tháng",
+            "Nhóm hàng(3 Cấp)",
+            "Thương hiệu",
+            "Số lần nhập",
+            "Số lần xuất",
+            "Tổng doanh thu",
+            "Giá vốn FIFO",
+            "Lãi gộp",
+            "Biên lãi gộp (%)",
+        ]
+    ]
+
+    # Sort by dimensions
+    result = result.sort_values(["Năm", "Tháng", "Nhóm hàng(3 Cấp)", "Thương hiệu"])
+
+    logger.info(f"Generated {len(result)} dimension combinations")
+    return result
 
 
 def process(staging_dir: Optional[Path] = None) -> Optional[Path]:
@@ -994,12 +1324,33 @@ def process(staging_dir: Optional[Path] = None) -> Optional[Path]:
         else:
             logger.warning("No gross profit data generated")
 
-        # Step 16: Enrich with product lookup and save enrichment
+        # Step 16: Calculate revenue and gross profit by dimensions
+        logger.info("=" * 70)
+        logger.info("Calculating revenue and gross profit by dimensions")
+        logger.info("=" * 70)
+
+        xuat_with_cogs_df = calculate_cogs_per_transaction(nhap_raw_df, xuat_raw_df)
+        lookup_df = fetch_product_lookup()
+        revenue_profit_df = process_revenue_profit_by_dimensions(
+            xuat_with_cogs_df, nhap_raw_df, lookup_df
+        )
+
+        if not revenue_profit_df.empty:
+            revenue_profit_path = output_dir / CONFIG["revenue_profit_file"]
+            revenue_profit_df.to_csv(revenue_profit_path, index=False, encoding="utf-8")
+            logger.info(f"Revenue/Profit by dimensions saved to: {revenue_profit_path}")
+            logger.info(f"  Columns: {', '.join(revenue_profit_df.columns)}")
+            logger.info(f"  Total combinations: {len(revenue_profit_df)}")
+        else:
+            logger.warning("No revenue/profit by dimensions data generated")
+
+        # Step 17: Enrich with product lookup and save enrichment
+
+        # Step 17: Enrich with product lookup and save enrichment
         logger.info("=" * 70)
         logger.info("Creating product enrichment (Nhóm hàng, Thương hiệu)")
         logger.info("=" * 70)
 
-        lookup_df = fetch_product_lookup()
         enrichment_df = enrich_product_data(product_info_df, lookup_df)
 
         if not enrichment_df.empty:

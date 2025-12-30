@@ -348,9 +348,11 @@ def standardize_column_types(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def process_groups(grouped_files: Dict, lineage: Optional[DataLineage] = None) -> pd.DataFrame:
+def process_groups(
+    grouped_files: Dict, lineage: Optional[DataLineage] = None
+) -> pd.DataFrame:
     """Process each file group and combine into single DataFrame with lineage tracking.
-    
+
     Args:
         grouped_files: Dict mapping header tuples to file paths
         lineage: Optional DataLineage tracker for audit trail
@@ -490,30 +492,33 @@ def fill_and_adjust_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def generate_output_filename(df: pd.DataFrame) -> str:
-     """Generate filename from date range in data."""
-     df["year_month_dt"] = pd.to_datetime(
-         df["Năm"].astype(str) + "-" + df["Tháng"].astype(str).str.zfill(2) + "-01",
-         errors="coerce",
-     )
+    """Generate filename from date range in data."""
+    df["year_month_dt"] = pd.to_datetime(
+        df["Năm"].astype(str) + "-" + df["Tháng"].astype(str).str.zfill(2) + "-01",
+        errors="coerce",
+    )
 
-     valid_dates_df = df.dropna(subset=["year_month_dt"])
-     if not valid_dates_df.empty:
-         min_date = valid_dates_df["year_month_dt"].min()
-         max_date = valid_dates_df["year_month_dt"].max()
-         first_year, first_month = min_date.year, min_date.month
-         last_year, last_month = max_date.year, max_date.month
-     else:
-         first_year = first_month = last_year = last_month = 0
-         logger.warning("Could not determine year/month range from data")
+    valid_dates_df = df.dropna(subset=["year_month_dt"])
+    if not valid_dates_df.empty:
+        min_date = valid_dates_df["year_month_dt"].min()
+        max_date = valid_dates_df["year_month_dt"].max()
+        first_year, first_month = min_date.year, min_date.month
+        last_year, last_month = max_date.year, max_date.month
+    else:
+        first_year = first_month = last_year = last_month = 0
+        logger.warning("Could not determine year/month range from data")
 
-     filename = f"Chi tiết xuất {first_year:04d}-{first_month:02d}_{last_year:04d}-{last_month:02d}.csv"
-     df.drop(columns=["year_month_dt"], inplace=True, errors="ignore")
+    filename = f"Chi tiết xuất {first_year:04d}-{first_month:02d}_{last_year:04d}-{last_month:02d}.csv"
+    df.drop(columns=["year_month_dt"], inplace=True, errors="ignore")
 
-     return filename
+    return filename
 
 
 def create_reconciliation_checkpoint(
-    input_dir: Path, output_filepath: Path, lineage: DataLineage, script_name: str = "clean_receipts_sale"
+    input_dir: Path,
+    output_filepath: Path,
+    lineage: DataLineage,
+    script_name: str = "clean_receipts_sale",
 ) -> Dict[str, Any]:
     """Reconcile input vs output quantities with detailed breakdown.
 
@@ -535,7 +540,7 @@ def create_reconciliation_checkpoint(
             with open(csv_file, "r", encoding="utf-8") as f:
                 reader = csv.reader(f)
                 rows = list(reader)
-            
+
             # Skip header rows (first 5 rows)
             for row_idx, row in enumerate(rows[5:], start=1):
                 # Count rows and sum quantities (approximate scan)
@@ -551,7 +556,9 @@ def create_reconciliation_checkpoint(
 
     # Step 2: Calculate OUTPUT totals from staging file
     output_df = pd.read_csv(output_filepath)
-    output_total_qty = output_df["Số lượng"].sum() if "Số lượng" in output_df.columns else 0
+    output_total_qty = (
+        output_df["Số lượng"].sum() if "Số lượng" in output_df.columns else 0
+    )
     output_row_count = len(output_df)
 
     # Step 3: Get lineage summary
@@ -606,12 +613,19 @@ def create_reconciliation_checkpoint(
             f"({report['lineage']['success_rate']:.1f}% success rate)"
         )
 
-    # Step 6: Log report
+    # Step 6: Save reconciliation report
+    report_filename = f"reconciliation_report_{script_name}.json"
+    report_path = output_filepath.parent / report_filename
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+
+    # Step 7: Log report
     logger.info("=" * 70)
     logger.info(f"RECONCILIATION REPORT ({script_name})")
     logger.info(f"Input:  {total_input_qty:,.0f} qty across {total_input_rows:,} rows")
     logger.info(f"Output: {output_total_qty:,.0f} qty across {output_row_count:,} rows")
     logger.info(f"Dropout: {report['reconciliation']['quantity_dropout_pct']:.1f}%")
+    logger.info(f"Report saved to: {report_filename}")
     for alert in report["alerts"]:
         logger.warning(alert)
     logger.info("=" * 70)
@@ -625,137 +639,135 @@ def create_reconciliation_checkpoint(
 
 
 def transform_sale_receipts(
-     input_dir: Optional[Path] = None, output_dir: Optional[Path] = None
- ) -> Path:
-     """Transform sale receipt data from raw to staging.
+    input_dir: Optional[Path] = None, output_dir: Optional[Path] = None
+) -> Path:
+    """Transform sale receipt data from raw to staging.
 
-     Args:
-         input_dir: Path to raw directory (default: data/00-raw/import_export/)
-         output_dir: Path to staging directory (default: data/01-staging/import_export/)
+    Args:
+        input_dir: Path to raw directory (default: data/00-raw/import_export/)
+        output_dir: Path to staging directory (default: data/01-staging/import_export/)
 
-     Returns:
-         Path: Output file path
-     """
-     logger.info("=" * 70)
-     logger.info("Starting sale receipt (CT.XUAT) transformation")
-     logger.info("=" * 70)
+    Returns:
+        Path: Output file path
+    """
+    logger.info("=" * 70)
+    logger.info("Starting sale receipt (CT.XUAT) transformation")
+    logger.info("=" * 70)
 
-     # Use defaults if not provided
-     if input_dir is None:
-         input_dir = DATA_RAW_DIR
-     if output_dir is None:
-         output_dir = DATA_STAGING_DIR
+    # Use defaults if not provided
+    if input_dir is None:
+        input_dir = DATA_RAW_DIR
+    if output_dir is None:
+        output_dir = DATA_STAGING_DIR
 
-     # Initialize lineage tracking (ADR-5)
-     DATA_LINEAGE_DIR.mkdir(parents=True, exist_ok=True)
-     lineage = DataLineage(DATA_LINEAGE_DIR)
+    # Initialize lineage tracking (ADR-5)
+    DATA_LINEAGE_DIR.mkdir(parents=True, exist_ok=True)
+    lineage = DataLineage(DATA_LINEAGE_DIR)
 
-     # Find all CSV files
-     csv_files = list(input_dir.glob(FILE_PATTERN))
-     if not csv_files:
-         logger.warning(f"No CSV files found matching {FILE_PATTERN} in {input_dir}")
-         return None
+    # Find all CSV files
+    csv_files = list(input_dir.glob(FILE_PATTERN))
+    if not csv_files:
+        logger.warning(f"No CSV files found matching {FILE_PATTERN} in {input_dir}")
+        return None
 
-     logger.info(f"Found {len(csv_files)} CSV files")
+    logger.info(f"Found {len(csv_files)} CSV files")
 
-     # Group files by header
-     grouped_files_by_header = {}
-     for filepath in csv_files:
-         combined_header = extract_and_combine_headers(filepath)
-         header_tuple = tuple(combined_header)
-         if header_tuple not in grouped_files_by_header:
-             grouped_files_by_header[header_tuple] = []
-         grouped_files_by_header[header_tuple].append(filepath)
+    # Group files by header
+    grouped_files_by_header = {}
+    for filepath in csv_files:
+        combined_header = extract_and_combine_headers(filepath)
+        header_tuple = tuple(combined_header)
+        if header_tuple not in grouped_files_by_header:
+            grouped_files_by_header[header_tuple] = []
+        grouped_files_by_header[header_tuple].append(filepath)
 
-     logger.info(f"Grouped files into {len(grouped_files_by_header)} header patterns")
+    logger.info(f"Grouped files into {len(grouped_files_by_header)} header patterns")
 
-     # Process all groups with lineage tracking
-     final_df = process_groups(grouped_files_by_header, lineage)
-     if final_df.empty:
-         logger.error("No data processed")
-         return None
+    # Process all groups with lineage tracking
+    final_df = process_groups(grouped_files_by_header, lineage)
+    if final_df.empty:
+        logger.error("No data processed")
+        return None
 
-     logger.info(f"Initial DataFrame shape: {final_df.shape}")
+    logger.info(f"Initial DataFrame shape: {final_df.shape}")
 
-     # Validate data
-     validate_date_consistency(final_df)
-     validate_data_completeness(final_df)
+    # Validate data
+    validate_date_consistency(final_df)
+    validate_data_completeness(final_df)
 
-     # Clean up columns
-     final_df = final_df.drop(
-         columns=[col for col in AUXILIARY_COLUMNS_TO_DROP if col in final_df.columns]
-     )
+    # Clean up columns
+    final_df = final_df.drop(
+        columns=[col for col in AUXILIARY_COLUMNS_TO_DROP if col in final_df.columns]
+    )
 
-     # Rename columns
-     filtered_rename_mapping = {k: v for k, v in RENAME_MAPPING.items() if v}
-     final_df.rename(columns=filtered_rename_mapping, inplace=True)
+    # Rename columns
+    filtered_rename_mapping = {k: v for k, v in RENAME_MAPPING.items() if v}
+    final_df.rename(columns=filtered_rename_mapping, inplace=True)
 
-     # Fill nulls and adjust quantities
-     final_df = fill_and_adjust_rows(final_df)
+    # Fill nulls and adjust quantities
+    final_df = fill_and_adjust_rows(final_df)
 
-     # Reorder columns
-     final_df = final_df[[col for col in COLUMN_ORDER if col in final_df.columns]]
+    # Reorder columns
+    final_df = final_df[[col for col in COLUMN_ORDER if col in final_df.columns]]
 
-     # Generate output filename
-     output_filename = generate_output_filename(final_df)
+    # Generate output filename
+    output_filename = generate_output_filename(final_df)
 
-     # Standardize column types
-     final_df = standardize_column_types(final_df)
+    # Standardize column types
+    final_df = standardize_column_types(final_df)
 
-     # Sort data
-     if "Ngày" in final_df.columns and "Mã chứng từ" in final_df.columns:
-         final_df["Ngày_dt"] = pd.to_datetime(final_df["Ngày"], errors="coerce")
-         final_df = final_df.sort_values(
-             by=["Ngày_dt", "Mã chứng từ"], na_position="last"
-         )
-         final_df = final_df.drop(columns=["Ngày_dt"])
+    # Sort data
+    if "Ngày" in final_df.columns and "Mã chứng từ" in final_df.columns:
+        final_df["Ngày_dt"] = pd.to_datetime(final_df["Ngày"], errors="coerce")
+        final_df = final_df.sort_values(
+            by=["Ngày_dt", "Mã chứng từ"], na_position="last"
+        )
+        final_df = final_df.drop(columns=["Ngày_dt"])
 
-     # Save output
-     output_dir.mkdir(parents=True, exist_ok=True)
-     output_filepath = output_dir / output_filename
-     final_df.to_csv(output_filepath, index=False, encoding="utf-8")
-     logger.info(f"Saved to: {output_filepath}")
-     logger.info(f"Rows: {len(final_df)}, Columns: {len(final_df.columns)}")
+    # Save output
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_filepath = output_dir / output_filename
+    final_df.to_csv(output_filepath, index=False, encoding="utf-8")
+    logger.info(f"Saved to: {output_filepath}")
+    logger.info(f"Rows: {len(final_df)}, Columns: {len(final_df.columns)}")
 
-     # Create summary dataframe (aggregate by Mã hàng, Tháng, Năm)
-     logger.info("=" * 70)
-     logger.info("Creating summary aggregation by product and month/year")
-     summary_df = final_df.groupby(
-         ["Mã hàng", "Tháng", "Năm"], as_index=False
-     ).agg(
-         {"Số lượng": "sum", "Thành tiền": "sum"}
-     )
-     
-     # Reorder columns to match detail data structure
-     summary_df = summary_df[["Mã hàng", "Số lượng", "Thành tiền", "Tháng", "Năm"]]
-     
-     # Generate summary filename
-     summary_filename = output_filename.replace("Chi tiết xuất", "Tổng hợp xuất")
-     summary_filepath = output_dir / summary_filename
-     summary_df.to_csv(summary_filepath, index=False, encoding="utf-8")
-     logger.info(f"Saved summary to: {summary_filepath}")
-     logger.info(f"Summary rows: {len(summary_df)}, Columns: {len(summary_df.columns)}")
-     logger.info("=" * 70)
+    # Create summary dataframe (aggregate by Tháng, Năm)
+    logger.info("=" * 70)
+    logger.info("Creating summary aggregation by month/year")
+    summary_df = final_df.groupby(["Tháng", "Năm"], as_index=False).agg(
+        {"Số lượng": "sum", "Thành tiền": "sum"}
+    )
 
-     # Save lineage audit trail (ADR-5)
-     logger.info("=" * 70)
-     logger.info("Saving data lineage audit trail")
-     lineage.save()
-     lineage_summary = lineage.summary()
-     logger.info(
-         f"Lineage saved: Total={lineage_summary['total']}, "
-         f"Success={lineage_summary['success']}, "
-         f"Rejected={lineage_summary['rejected']}, "
-         f"Success Rate={lineage_summary['success_rate']:.1f}%"
-     )
-     logger.info("=" * 70)
+    # Reorder columns
+    summary_df = summary_df[["Năm", "Tháng", "Số lượng", "Thành tiền"]]
 
-     # Step: Reconciliation check (ADR-5: Audit trail for data integrity)
-     reconciliation = create_reconciliation_checkpoint(
-         input_dir, output_filepath, lineage, "clean_receipts_sale"
-     )
+    # Generate summary filename
+    summary_filename = output_filename.replace("Chi tiết xuất", "Tổng hợp xuất")
+    summary_filepath = output_dir / summary_filename
+    summary_df.to_csv(summary_filepath, index=False, encoding="utf-8")
+    logger.info(f"Saved summary to: {summary_filepath}")
+    logger.info(f"Summary rows: {len(summary_df)}, Columns: {len(summary_df.columns)}")
+    logger.info("=" * 70)
 
-     return output_filepath
+    # Save lineage audit trail (ADR-5)
+    logger.info("=" * 70)
+    logger.info("Saving data lineage audit trail")
+    lineage.save()
+    lineage_summary = lineage.summary()
+    logger.info(
+        f"Lineage saved: Total={lineage_summary['total']}, "
+        f"Success={lineage_summary['success']}, "
+        f"Rejected={lineage_summary['rejected']}, "
+        f"Success Rate={lineage_summary['success_rate']:.1f}%"
+    )
+    logger.info("=" * 70)
+
+    # Step: Reconciliation check (ADR-5: Audit trail for data integrity)
+    reconciliation = create_reconciliation_checkpoint(
+        input_dir, output_filepath, lineage, "clean_receipts_sale"
+    )
+
+    return output_filepath
 
 
 if __name__ == "__main__":

@@ -731,7 +731,8 @@ def create_reconciliation_checkpoint(
         )
 
     # Step 9: Save reconciliation report
-    report_path = output_filepath.parent / "reconciliation_report.json"
+    report_filename = f"reconciliation_report_clean_receipts_purchase.json"
+    report_path = output_filepath.parent / report_filename
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
 
@@ -740,7 +741,7 @@ def create_reconciliation_checkpoint(
     logger.info(f"Input:  {total_input_qty:,.0f} qty across {total_input_rows:,} rows")
     logger.info(f"Output: {output_total_qty:,.0f} qty across {output_row_count:,} rows")
     logger.info(f"Dropout: {report['reconciliation']['quantity_dropout_pct']:.1f}%")
-    logger.info(f"File-by-file breakdown saved to: {report_path}")
+    logger.info(f"File-by-file breakdown saved to: {report_filename}")
     for alert in report["alerts"]:
         logger.warning(alert)
     logger.info("=" * 70)
@@ -858,15 +859,15 @@ def transform_purchase_receipts(
         f"Rows: {len(final_combined_df)}, Columns: {len(final_combined_df.columns)}"
     )
 
-    # Create summary dataframe (aggregate by Mã hàng, Tháng, Năm)
+    # Create summary dataframe (aggregate by Tháng, Năm)
     logger.info("=" * 70)
-    logger.info("Creating summary aggregation by product and month/year")
-    summary_df = final_combined_df.groupby(
-        ["Mã hàng", "Tháng", "Năm"], as_index=False
-    ).agg({"Số lượng": "sum", "Thành tiền": "sum"})
+    logger.info("Creating summary aggregation by month/year")
+    summary_df = final_combined_df.groupby(["Tháng", "Năm"], as_index=False).agg(
+        {"Số lượng": "sum", "Thành tiền": "sum"}
+    )
 
-    # Reorder columns to match detail data structure
-    summary_df = summary_df[["Mã hàng", "Số lượng", "Thành tiền", "Tháng", "Năm"]]
+    # Reorder columns
+    summary_df = summary_df[["Năm", "Tháng", "Số lượng", "Thành tiền"]]
 
     # Generate summary filename
     summary_filename = output_filename.replace("Chi tiết nhập", "Tổng hợp nhập")
@@ -895,9 +896,10 @@ def transform_purchase_receipts(
     )
 
     if reconciliation["reconciliation"]["quantity_dropout_pct"] > 20:
+        report_filename = f"reconciliation_report_clean_receipts_purchase.json"
         raise ValueError(
             f"Reconciliation failed: {reconciliation['reconciliation']['quantity_dropout_pct']:.1f}% "
-            "quantity lost (threshold: 20%). See reconciliation_report.json for details. "
+            f"quantity lost (threshold: 20%). See {report_filename} for details. "
             "Note: 9.6% loss is expected (Kho 1 only, dropping Kho 2-5). "
             "Loss exceeding 20% may indicate data quality issues in source files."
         )
