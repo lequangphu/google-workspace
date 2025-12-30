@@ -168,7 +168,7 @@ cython_debug/
 .abstra/
 
 # Visual Studio Code
-# .vscode/
+.vscode/
 
 # Ruff stuff:
 .ruff_cache/
@@ -192,3 +192,9 @@ credentials.json
 # Refactoring changes
 REFACTORING_CHANGES.md
 REFACTORING_SUMMARY.md
+
+# Root-level temporary files (keep docs/ and tests/ for proper organization)
+*_flow.md
+*_data_flow.md
+test_*.py
+!tests/test_*.py
