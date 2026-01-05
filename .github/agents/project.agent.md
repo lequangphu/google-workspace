@@ -31,13 +31,11 @@ You are an AI assistant helping refactor and extend a tire distribution ERP data
 
 - ❌ `python`, `pip`, `poetry` → **only `uv`**
 - ❌ Hardcoded paths/IDs → **only from `pipeline.toml`**
-- ❌ Skipping row tracking → **every row must have lineage**
 - ❌ Direct writes to `data/03-erp-export/` → **always: staging → validate → promote**
 - ❌ Creating `.md` files outside `docs/` → **keeps knowledge modular**
 
 ### ✅ Must Do
 
-- ✅ Use `DataLineage` for every transformation
 - ✅ Validate before export with `ERPTemplateRegistry`
 - ✅ Test on real CSVs from `data/00-raw/`
 - ✅ Keep each `.py` file < 300 lines
@@ -101,7 +99,6 @@ Related: #15"
 3. **Implement** with:
    - Type hints on all functions
    - Google-format docstrings
-   - `DataLineage` tracking (every row!)
    - `logger.info("=" * 70)` at major steps
 4. **Validate** before export using `ERPTemplateRegistry`
 5. **Test** on real data from `data/00-raw/`
@@ -113,7 +110,6 @@ Related: #15"
 - **Import error?** → Check `uv sync` has been run
 - **Test failure?** → Ensure you're using real CSVs from `/data/00-raw/`, not mock data
 - **Column mismatch?** → Verify exact Vietnamese name in `docs/erp-mapping.md`
-- **Row missing from output?** → Check `DataLineage` logs for rejection reason
 - **API quota hit?** → Use `HashCache` + batch operations (see `docs/architecture-decisions.md`)
 
 ## When to Read Which Doc
@@ -139,7 +135,6 @@ This is critical for enriching extracted product data. Always check if your code
 ## Anti-patterns (Don't do these)
 
 ❌ **Skip logging** – Use `logger.info()` at major steps  
-❌ **Silently fail on rows** – Track every row (success OR rejection reason)  
 ❌ **Test on fake data** – Use real CSVs from `/data/00-raw/`  
 ❌ **Combine scripts** – Keep each file < 300 lines, separate by raw source  
 ❌ **Create markdown files** – Keep them in `docs/` only  

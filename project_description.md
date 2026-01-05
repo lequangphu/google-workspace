@@ -54,7 +54,7 @@ Based on existing scripts.
 Restructure and write transformed data to Excel (.xlsx) files in /data/03-erp-export/. The files structure must strictly follow the templates of KiotViet modules stored in /data/templates/.
 
 Modules and templates path:
-1. Products: /Users/phu/repos/google-workspace/data/templates/MauFileSanPham.xlsx
-2. PriceBook: /Users/phu/repos/google-workspace/data/templates/MauFileBangGia.xlsx
-3. Suppliers: /Users/phu/repos/google-workspace/data/templates/MauFileNhaCungCap.xlsx
-4. Customers: /Users/phu/repos/google-workspace/data/templates/MauFileKhachHang.xlsx
+1. Products: data/templates/MauFileSanPham.xlsx
+2. PriceBook: data/templates/MauFileBangGia.xlsx
+3. Suppliers: data/templates/MauFileNhaCungCap.xlsx
+4. Customers: data/templates/MauFileKhachHang.xlsx

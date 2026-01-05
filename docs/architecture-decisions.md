@@ -73,7 +73,6 @@ data/03-erp-export/    ← Final, validated outputs only
 
 **Rationale**:
 - **AI context efficiency**: When fixing customer ID logic, agent loads only receivable/, not products/
-- **Visible data lineage**: clear what source each transformation comes from
 - **Modularity**: related tasks (clean + extract) naturally belong together
 - **Maintainability**: easier to understand each module's responsibility
 
@@ -90,14 +89,16 @@ src/modules/
 │   ├── clean_receipts_purchase.py
 │   ├── clean_receipts_sale.py
 │   ├── clean_inventory.py
-│   └── extract_products.py
+│   ├── extract_products.py
+│   ├── extract_attributes.py
+│   ├── reconcile_inventory.py
+│   └── generate_products_xlsx.py
 ├── receivable/              # Raw source: TỔNG CÔNG NỢ + Thong tin KH
-│   ├── clean_customers.py
-│   └── extract_customer_ids.py
+│   └── generate_customers_xlsx_v2.py
 ├── payable/                 # Raw source: MÃ CTY + TỔNG HỢP
-│   └── extract_suppliers.py
-└── cashflow/                # Raw source: Tiền gửi + Tien mat
-    └── transform.py
+│   └── generate_suppliers_xlsx.py
+└── cashflow/                # Raw source: Tiền gửi + Tien mat (future)
+    └── (future)
 ```
 
 **Anti-pattern** (by phase):
@@ -133,46 +134,6 @@ if should_ingest_import_export(csv_path, remote_modified_time, current_month, cu
 ```
 
 **Trade-off**: If files are corrected retroactively without timestamp update, we won't detect the change. Acceptable risk.
-
----
-
-## ADR-5: Data Lineage Tracking (Mandatory)
-
-**Decision**: Every transformation must track source → output mapping for audit trail.
-
-**Rationale**:
-- **Auditability**: Can trace any output row back to source row
-- **Error diagnosis**: Know exactly which source rows were rejected and why
-- **Compliance**: Required for ERP migrations (need audit trail for accountants)
-- **Debugging**: Identify which rows caused downstream issues
-
-**Implementation**:
-```python
-from src.modules.lineage import DataLineage
-
-lineage = DataLineage(output_dir)
-
-for idx, row in df.iterrows():
-    try:
-        result = clean_purchase_receipts(row)
-        lineage.track(
-            source_file=file.name,
-            source_row=idx,
-            output_row=len(output),
-            operation="clean_receipts_purchase",
-            status="success"
-        )
-    except ValueError as e:
-        lineage.track(
-            source_file=file.name,
-            source_row=idx,
-            output_row=None,
-            operation="clean_receipts_purchase",
-            status=f"rejected: {e}"
-        )
-```
-
-**Rule**: No exceptions — every row must be tracked (success or rejection reason).
 
 ---
 

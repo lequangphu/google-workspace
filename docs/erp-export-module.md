@@ -225,4 +225,3 @@ logger.info(f"Exported {stats['products_exported']} products to {output_path}")
 2. **Advanced enrichment** – Multi-source joins (Google Sheets, external databases)
 3. **Batch operations** – Export multiple templates in parallel
 4. **Error recovery** – Rollback on validation failure
-5. **Audit logging** – Track all exported rows with lineage

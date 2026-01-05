@@ -1,13 +1,18 @@
-"""Tests for ERP exporter functions."""
+"""Tests for ERP exporter functions.
 
+DEPRECATED: The export_products_xlsx function has been migrated to
+generate_products_xlsx.py. These tests will be removed on 2026-01-14.
+"""
+
+import pytest
+
+pytest.importorskip("openpyxl")
 
 import pandas as pd
-import pytest
 
 from src.erp import (
     export_customers_xlsx,
     export_pricebook_xlsx,
-    export_products_xlsx,
 )
 
 
@@ -81,6 +86,9 @@ def sample_customer_ids_csv(tmp_path):
     return path
 
 
+@pytest.mark.skip(
+    reason="export_products_xlsx deprecated, migrated to generate_products_xlsx.py"
+)
 def test_export_products_xlsx(
     sample_product_info_csv,
     sample_inventory_csv,
@@ -163,6 +171,9 @@ def test_export_pricebook_xlsx(
     assert "Tên hàng" in df.columns
 
 
+@pytest.mark.skip(
+    reason="export_products_xlsx deprecated, migrated to generate_products_xlsx.py"
+)
 def test_export_products_xlsx_missing_required_column(
     sample_product_info_csv,
     sample_inventory_csv,

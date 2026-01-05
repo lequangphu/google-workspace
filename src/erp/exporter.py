@@ -256,7 +256,7 @@ def export_products_xlsx(
             "Cannot merge enrichment: missing 'Mã hàng' in one or both sources"
         )
 
-    logger.info(f"Merged data has {len(df)} products")
+        logger.info(f"Merged data has {len(df)} products")
 
     # Build template DataFrame (27 columns)
     logger.info("Mapping to 27-column template...")

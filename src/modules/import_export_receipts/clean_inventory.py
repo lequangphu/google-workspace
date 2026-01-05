@@ -26,13 +26,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 from tqdm import tqdm
 
-from src.modules.lineage import DataLineage
-
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-
-DATA_LINEAGE_DIR = Path.cwd() / "data" / ".lineage"  # Centralized lineage storage
 
 CONFIG = {
     "file_pattern": r"(\d{4})_(\d{1,2})_XNT\.csv",
@@ -45,6 +41,7 @@ CONFIG = {
         "TỒN_CUỐI_KỲ_THÀNH_TIỀN",
         "TỒN_CUỐI_KỲ_DOANH_THU",
         "TỒN_CUỐI_KỲ_LÃI_GỘP",
+        "CHI_PHÍ_TIỀN",
     ],
     "column_rename_map": {
         "Mã_SP": "Mã hàng",
@@ -64,6 +61,8 @@ CONFIG = {
         "TỒN_CUỐI_KỲ_THÀNH_TIỀN": "Thành tiền cuối kỳ",
         "TỒN_CUỐI_KỲ_DOANH_THU": "Doanh thu cuối kỳ",
         "TỒN_CUỐI_KỲ_LÃI_GỘP": "Lãi gộp cuối kỳ",
+        "CHI_PHÍ_DIỄN_GIẢI": "Tên chi phí",
+        "CHI_PHÍ_TIỀN": "Thành tiền chi phí",
         "NGÀY": "Ngày",
     },
     "numeric_cols": [
@@ -81,6 +80,7 @@ CONFIG = {
         "Thành tiền cuối kỳ",
         "Doanh thu cuối kỳ",
         "Lãi gộp cuối kỳ",
+        "Thành tiền chi phí",
         "Biên lãi gộp",
     ],
 }
@@ -259,14 +259,12 @@ def group_files_by_headers(file_paths: List[Path]) -> Dict[Tuple, List[Path]]:
 def load_and_process_group(
     combined_header_key: Tuple,
     file_paths: List[Path],
-    lineage: Optional[DataLineage] = None,
 ) -> Optional[pd.DataFrame]:
     """Load and consolidate dataframes for a group of files with matching headers.
 
     Args:
         combined_header_key: The header structure key for this group
         file_paths: List of file paths in this group
-        lineage: Optional DataLineage tracker for audit trail
 
     Returns:
         Consolidated DataFrame or None if no valid data
@@ -309,17 +307,6 @@ def load_and_process_group(
             df["NGÀY"] = pd.to_datetime(
                 df["NGÀY"], errors="coerce", format=CONFIG["date_format"]
             )
-
-            # Track lineage for all rows in this file
-            for source_idx in range(len(df)):
-                if lineage:
-                    lineage.track(
-                        source_file=filename,
-                        source_row=source_idx,
-                        output_row=output_row_idx + source_idx,
-                        operation="load_and_process_group",
-                        status="success",
-                    )
             output_row_idx += len(df)
             group_dataframes.append(df)
 
@@ -338,13 +325,11 @@ def load_and_process_group(
 
 def consolidate_files(
     header_groups: Dict[Tuple, List[Path]],
-    lineage: Optional[DataLineage] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Consolidate all file groups into dataframes.
 
     Args:
         header_groups: Dict mapping headers to file paths
-        lineage: Optional DataLineage tracker for audit trail
 
     Returns:
         Dict mapping group names to consolidated DataFrames
@@ -355,7 +340,7 @@ def consolidate_files(
     for combined_header_key, file_paths in tqdm(
         header_groups.items(), desc="Processing groups"
     ):
-        df = load_and_process_group(combined_header_key, file_paths, lineage)
+        df = load_and_process_group(combined_header_key, file_paths)
         if df is not None:
             consolidated_dataframes[f"Group_{group_idx}"] = df
         group_idx += 1
@@ -414,6 +399,67 @@ def clean_data(
     logger.info(f"Dropped columns from {len(stats['columns_dropped'])} group(s)")
 
     return consolidated_dataframes
+
+
+def extract_cost_data(consolidated_dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Extract cost rows (CHI PHÍ) into a separate DataFrame.
+
+    Extracts rows where 'CHI_PHÍ_DIỄN_GIẢI' has a value before they're dropped
+    due to empty product codes.
+
+    Args:
+        consolidated_dataframes: Dict of group name to DataFrame
+
+    Returns:
+        DataFrame with cost data: Năm, Tháng, Tên chi phí, Thành tiền chi phí
+    """
+    cost_rows = []
+
+    for group_name, df in consolidated_dataframes.items():
+        if "CHI_PHÍ_DIỄN_GIẢI" not in df.columns:
+            continue
+
+        # Filter rows where Tên chi phí has a value
+        df_costs = df[df["CHI_PHÍ_DIỄN_GIẢI"].notna() & (df["CHI_PHÍ_DIỄN_GIẢI"].astype(str).str.strip() != "")].copy()
+
+        if df_costs.empty:
+            continue
+
+        # Select and rename columns
+        df_costs = df_costs.rename(columns={
+            "CHI_PHÍ_DIỄN_GIẢI": "Tên chi phí",
+            "CHI_PHÍ_TIỀN": "Thành tiền chi phí",
+        })
+
+        # Keep only required columns
+        available_cols = ["Năm", "Tháng", "Tên chi phí", "Thành tiền chi phí"]
+        available_cols = [col for col in available_cols if col in df_costs.columns]
+        df_costs = df_costs[available_cols].copy()
+
+        # Ensure numeric type for Thành tiền chi phí
+        if "Thành tiền chi phí" in df_costs.columns:
+            df_costs["Thành tiền chi phí"] = pd.to_numeric(
+                df_costs["Thành tiền chi phí"].astype(str).str.replace(",", "", regex=False),
+                errors="coerce"
+            ).fillna(0)
+
+        cost_rows.append(df_costs)
+
+    if not cost_rows:
+        logger.info("No cost data found in input files")
+        return pd.DataFrame()
+
+    cost_df = pd.concat(cost_rows, ignore_index=True)
+    logger.info(f"Extracted {len(cost_df)} cost rows from input files")
+
+    # Sum duplicates if they exist
+    if cost_df.duplicated(subset=["Tên chi phí"], keep=False).any():
+        cost_df = cost_df.groupby(
+            ["Năm", "Tháng", "Tên chi phí"], as_index=False
+        )["Thành tiền chi phí"].sum()
+        logger.info(f"Aggregated to {len(cost_df)} unique cost entries")
+
+    return cost_df
 
 
 def merge_and_refine(consolidated_dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -587,7 +633,6 @@ def detect_inventory_adjustments(final_df: pd.DataFrame) -> pd.DataFrame:
 def create_reconciliation_checkpoint(
     input_dir: Path,
     output_filepath: Path,
-    lineage: DataLineage,
     script_name: str = "clean_inventory",
 ) -> Dict[str, Any]:
     """Reconcile input vs output quantities with detailed breakdown.
@@ -595,14 +640,12 @@ def create_reconciliation_checkpoint(
     Args:
         input_dir: Path to raw import_export directory
         output_filepath: Path to output CSV file
-        lineage: DataLineage tracker with success/rejection stats
         script_name: Name of script for report identification
 
     Returns:
         dict: Reconciliation report with input/output/dropout by file
     """
     # Step 1: Calculate INPUT totals from raw files
-    input_totals = defaultdict(float)
     input_row_counts = defaultdict(int)
 
     for csv_file in input_dir.glob("*XNT.csv"):
@@ -622,10 +665,7 @@ def create_reconciliation_checkpoint(
     output_df = pd.read_csv(output_filepath)
     output_row_count = len(output_df)
 
-    # Step 3: Get lineage summary
-    lineage_data = lineage.summary()
-
-    # Step 4: Build reconciliation report
+    # Step 3: Build reconciliation report
     total_input_rows = sum(input_row_counts.values())
 
     report = {
@@ -644,21 +684,10 @@ def create_reconciliation_checkpoint(
                 else 0
             ),
         },
-        "lineage": {
-            "total_tracked": lineage_data["total"],
-            "success": lineage_data["success"],
-            "rejected": lineage_data["rejected"],
-            "success_rate": lineage_data["success_rate"],
-        },
         "alerts": [],
     }
 
     # Step 5: Flag issues
-    if report["lineage"]["rejected"] > total_input_rows * 0.01:
-        report["alerts"].append(
-            f"⚠️ WARNING: {report['lineage']['rejected']} rows rejected "
-            f"({report['lineage']['success_rate']:.1f}% success rate)"
-        )
 
     # Step 6: Save reconciliation report
     report_filename = f"reconciliation_report_{script_name}.json"
@@ -694,14 +723,10 @@ def process(
         Path to output file or None if processing failed
     """
     staging_dir.mkdir(parents=True, exist_ok=True)
-    DATA_LINEAGE_DIR.mkdir(parents=True, exist_ok=True)
 
     logger.info("=" * 70)
     logger.info("STARTING INVENTORY (XUẤT NHẬP TỒN) PROCESSING")
     logger.info("=" * 70)
-
-    # Initialize lineage tracking (ADR-5)
-    lineage = DataLineage(DATA_LINEAGE_DIR)
 
     try:
         # Load input files
@@ -710,12 +735,15 @@ def process(
         # Group by headers
         header_groups = group_files_by_headers(file_paths)
 
-        # Consolidate groups with lineage tracking
-        consolidated_dataframes = consolidate_files(header_groups, lineage)
+        # Consolidate groups
+        consolidated_dataframes = consolidate_files(header_groups)
 
         if not consolidated_dataframes:
             logger.error("No data could be processed")
             return None
+
+        # Extract cost data before cleaning drops rows with empty product codes
+        cost_df = extract_cost_data(consolidated_dataframes)
 
         # Clean data
         consolidated_dataframes = clean_data(consolidated_dataframes)
@@ -733,11 +761,11 @@ def process(
         # Determine output filename from data
         if "Ngày" not in final_df.columns:
             logger.warning("'Ngày' column missing")
-            output_filename = "xuat_nhap_ton.csv"
+            output_filename = "Xuất nhập tồn.csv"
         else:
             final_df_valid = final_df.dropna(subset=["Ngày"])
             if final_df_valid.empty:
-                output_filename = "xuat_nhap_ton.csv"
+                output_filename = "Xuất nhập tồn.csv"
             else:
                 min_date = final_df_valid["Ngày"].min()
                 max_date = final_df_valid["Ngày"].max()
@@ -747,7 +775,7 @@ def process(
                 last_year = max_date.year
                 last_month = str(max_date.month).zfill(2)
 
-                output_filename = f"xuat_nhap_ton_{first_year}_{first_month}_{last_year}_{last_month}.csv"
+                output_filename = f"Xuất nhập tồn {first_year}_{first_month}_{last_year}_{last_month}.csv"
 
         output_filepath = staging_dir / output_filename
         final_df.to_csv(output_filepath, index=False, encoding="utf-8")
@@ -782,23 +810,11 @@ def process(
 
         logger.info("=" * 70)
 
-        # Save lineage audit trail (ADR-5)
-        logger.info("=" * 70)
-        logger.info("Saving data lineage audit trail")
-        lineage.save()
-        lineage_summary = lineage.summary()
-        logger.info(
-            f"Lineage saved: Total={lineage_summary['total']}, "
-            f"Success={lineage_summary['success']}, "
-            f"Rejected={lineage_summary['rejected']}, "
-            f"Success Rate={lineage_summary['success_rate']:.1f}%"
-        )
-        logger.info("=" * 70)
+        create_reconciliation_checkpoint(input_dir, output_filepath, "clean_inventory")
 
-        # Step: Reconciliation check (ADR-5: Audit trail for data integrity)
-        reconciliation = create_reconciliation_checkpoint(
-            input_dir, output_filepath, lineage, "clean_inventory"
-        )
+        financial_path = create_financial_report(cost_df, staging_dir)
+        if financial_path:
+            logger.info(f"Financial report ready for upload: {financial_path}")
 
         logger.info("=" * 70)
         logger.info("INVENTORY PROCESSING COMPLETED SUCCESSFULLY")
@@ -809,6 +825,62 @@ def process(
     except Exception as e:
         logger.error(f"Inventory processing pipeline failed: {str(e)}", exc_info=True)
         raise
+
+
+def create_financial_report(
+    cost_df: pd.DataFrame,
+    output_dir: Path,
+) -> Optional[Path]:
+    """Create 'Chi tiết chi phí' (Cost Detail) report from extracted cost data.
+
+    Args:
+        cost_df: DataFrame from extract_cost_data() with columns:
+            Năm, Tháng, Tên chi phí, Thành tiền chi phí
+        output_dir: Directory to save report
+
+    Returns:
+        Path to report CSV or None if creation failed
+    """
+    logger.info("=" * 70)
+    logger.info("CREATING COST DETAIL REPORT (CHI TIẾT CHI PHÍ)")
+    logger.info("=" * 70)
+
+    if cost_df.empty:
+        logger.warning("Cost data is empty, skipping report")
+        return None
+
+    # Generate filename with date range
+    cost_df_valid = cost_df.dropna(subset=["Năm", "Tháng"]).copy()
+    if not cost_df_valid.empty:
+        # Create date column to find actual min/max (year, month) pairs
+        cost_df_valid["sort_key"] = cost_df_valid["Năm"] * 100 + cost_df_valid["Tháng"]
+        min_idx = cost_df_valid["sort_key"].idxmin()
+        max_idx = cost_df_valid["sort_key"].idxmax()
+
+        first_year = int(cost_df_valid.loc[min_idx, "Năm"])
+        first_month = int(cost_df_valid.loc[min_idx, "Tháng"])
+        last_year = int(cost_df_valid.loc[max_idx, "Năm"])
+        last_month = int(cost_df_valid.loc[max_idx, "Tháng"])
+
+        month_names = [
+            "", "01", "02", "03", "04", "05", "06",
+            "07", "08", "09", "10", "11", "12"
+        ]
+        last_month_name = month_names[last_month]
+        filename = (
+            f"Chi tiết chi phí "
+            f"{first_year}_{first_month:02d}_{last_year}_{last_month_name}.csv"
+        )
+    else:
+        filename = "Chi tiết chi phí.csv"
+
+    filepath = output_dir / filename
+    cost_df.to_csv(filepath, index=False, encoding="utf-8")
+
+    logger.info(f"✅ Created cost report: {filepath}")
+    logger.info(f"   Rows: {len(cost_df)}")
+
+    return filepath
 
 
 if __name__ == "__main__":

@@ -3,12 +3,54 @@
 """
 Data Pipeline Orchestrator
 
+CLI Quick Reference:
+    uv run src/pipeline/orchestrator.py                    # Full pipeline, all modules
+    uv run src/pipeline/orchestrator.py -m ier             # Full pipeline, import_export_receipts only
+    uv run src/pipeline/orchestrator.py -m rec,pay         # Full pipeline, receivable + payable
+    uv run src/pipeline/orchestrator.py -s transform       # Transform only, all modules
+    uv run src/pipeline/orchestrator.py -s transform -m ier # Transform, import_export_receipts only
+    uv run src/pipeline/orchestrator.py -i                 # Ingest step only
+    uv run src/pipeline/orchestrator.py -t                 # Transform step only
+    uv run src/pipeline/orchestrator.py -e                 # Export step only
+    uv run src/pipeline/orchestrator.py -u                 # Upload step only
+    uv run src/pipeline/orchestrator.py -P                 # Products workflow (ingest + export)
+
+Short Flags:
+    -s <steps>     --steps <steps>      Steps: ingest,transform,export,upload
+    -m <modules>   --modules <modules>  Modules: ier,rec,pay,cash (or full names)
+    -i             ingest step only
+    -t             transform step only
+    -e             export step only
+    -u             upload step only
+    -P             products-only workflow
+
+Module Aliases:
+    ier   import_export_receipts    Products, PriceBook, Inventory
+    rec   receivable                Customers, Debts
+    pay   payable                   Suppliers
+    cash  cashflow                  Deposits, Cash transactions
+
+Use Cases:
+    1. Full pipeline on all modules
+       uv run src/pipeline/orchestrator.py
+
+    2. Full pipeline on specific modules
+       uv run src/pipeline/orchestrator.py -m ier
+       uv run src/pipeline/orchestrator.py -m rec,pay
+
+    3. Part of pipeline on all modules
+       uv run src/pipeline/orchestrator.py -s ingest,transform
+       uv run src/pipeline/orchestrator.py -s transform
+
+    4. Part of pipeline on specific modules
+       uv run src/pipeline/orchestrator.py -s transform -m ier
+       uv run src/pipeline/orchestrator.py -s transform,export -m rec
+
 Workflow:
 1. Ingest: Download data from Google Sheets to data/00-raw/
 2. Transform: Process raw data to data/01-staging/ (only if ingest modified files OR staging files missing)
-3. Upload: Upload transformed files to Google Drive (only if transform modified files)
-
-Each step can be run independently with --step flag, or full pipeline with --full.
+3. Export: Generate ERP XLSX files from data/01-staging/ to data/03-erp-export/
+4. Upload: Upload transformed files to Google Drive (only if transform modified files)
 """
 
 import argparse
@@ -26,8 +68,6 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
-from src.erp.exporter import export_products_xlsx
-
 # === CONFIGURATION ===
 
 WORKSPACE_ROOT = Path(__file__).parent.parent.parent
@@ -42,6 +82,42 @@ DATA_PRODUCT_DIR = WORKSPACE_ROOT / "data" / "reports"
 
 # Migrated module paths
 MODULE_INGEST = WORKSPACE_ROOT / "src" / "modules" / "ingest.py"
+
+# Transform module registry: maps source to transformation scripts
+TRANSFORM_MODULES = {
+    "import_export_receipts": [
+        "clean_inventory.py",
+        "clean_receipts_purchase.py",
+        "generate_opening_balance_receipts.py",
+        "clean_receipts_sale.py",
+        "extract_products.py",
+        "extract_attributes.py",
+        "reconcile_inventory.py",
+    ],
+    "receivable": [
+        "generate_customers_xlsx_v2.py",
+    ],
+    "payable": [
+        "generate_suppliers_xlsx.py",
+    ],
+    "cashflow": [],
+}
+
+# Module aliases: short nicknames for modules
+MODULE_ALIASES = {
+    "ier": "import_export_receipts",
+    "rec": "receivable",
+    "pay": "payable",
+    "cash": "cashflow",
+}
+
+# Module subdirectory mapping in staging/validated dirs
+MODULE_SUBDIRS = {
+    "import_export_receipts": "import_export",
+    "receivable": "receivable",
+    "payable": "payable",
+    "cashflow": "cashflow",
+}
 
 # Legacy script paths (for fallback)
 SCRIPT_INGEST = WORKSPACE_ROOT / "ingest.py"
@@ -109,10 +185,10 @@ def files_modified_since(dirpath: Path, since_time: Optional[float]) -> bool:
 
 
 def list_csv_files(dirpath: Path) -> List[Path]:
-    """List all CSV files in directory."""
+    """List all CSV files in directory and subdirectories."""
     if not dirpath.exists():
         return []
-    return sorted(dirpath.glob("*.csv"))
+    return sorted(dirpath.rglob("*.csv"))
 
 
 def run_command(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
@@ -243,7 +319,7 @@ def add_csv_as_sheet_tab(
         sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
             range=f"'{sheet_name}'!A1",
-            valueInputOption="RAW",
+            valueInputOption="USER_ENTERED",
             body={"values": values},
         ).execute()
 
@@ -290,10 +366,16 @@ def upload_file_to_drive(
 # === PIPELINE STEPS ===
 
 
-def step_ingest() -> bool:
-    """Step 1: Ingest data from Google Sheets."""
+def step_ingest(modules_filter: Optional[List[str]] = None) -> bool:
+    """Step 1: Ingest data from Google Sheets.
+
+    Args:
+        modules_filter: List of modules to ingest. If None, ingest all.
+    """
     logger.info("=" * 70)
     logger.info("STEP 1: INGEST")
+    if modules_filter:
+        logger.info(f"Modules: {', '.join(modules_filter)}")
     logger.info("=" * 70)
 
     # Try migrated module first
@@ -303,7 +385,12 @@ def step_ingest() -> bool:
         logger.error(f"Ingest script not found: {ingest_script}")
         return False
 
-    returncode, stdout, stderr = run_command(["uv", "run", str(ingest_script)])
+    # Build command with optional sources filter
+    cmd = ["uv", "run", str(ingest_script)]
+    if modules_filter:
+        cmd.extend(["--only", ",".join(modules_filter)])
+
+    returncode, stdout, stderr = run_command(cmd)
 
     if stdout:
         logger.info(stdout)
@@ -318,23 +405,30 @@ def step_ingest() -> bool:
         return False
 
 
-def step_transform() -> bool:
-    """Step 2: Transform data from raw to staging."""
+def step_transform(modules_filter: Optional[List[str]] = None) -> bool:
+    """Step 2: Transform data from raw to staging.
+
+    Args:
+        modules_filter: List of modules to transform. If None, transform all.
+    """
     logger.info("=" * 70)
     logger.info("STEP 2: TRANSFORM")
+    if modules_filter:
+        logger.info(f"Modules: {', '.join(modules_filter)}")
     logger.info("=" * 70)
 
-    # Run all migrated transformation modules
-    transform_modules = [
-        ("import_export_receipts", "clean_receipts_purchase.py"),
-        ("import_export_receipts", "clean_receipts_sale.py"),
-        ("import_export_receipts", "clean_inventory.py"),
-        ("import_export_receipts", "extract_products.py"),
-        ("receivable", "clean_customers.py"),
-        ("receivable", "extract_customer_ids.py"),
-        ("receivable", "clean_debts.py"),
-        ("payable", "extract_suppliers.py"),
-    ]
+    # Build list of (module, script) tuples from registry
+    transform_modules = []
+    for module, scripts in TRANSFORM_MODULES.items():
+        if modules_filter and module not in modules_filter:
+            logger.debug(f"Skipping module: {module}")
+            continue
+        for script in scripts:
+            transform_modules.append((module, script))
+
+    if not transform_modules:
+        logger.warning("No transform modules found for given filter")
+        return True
 
     all_succeeded = True
     for module, script in transform_modules:
@@ -435,55 +529,89 @@ def step_generate_product_info() -> bool:
         return False
 
 
-def step_export_erp() -> bool:
-    """Step 2.7: Export validated data to ERP XLSX files."""
+def step_export_erp(modules_filter: Optional[List[str]] = None) -> bool:
+    """Step 2.7: Export validated data to ERP XLSX files.
+
+    Args:
+        modules_filter: List of modules to export. If None, export all available.
+    """
     logger.info("=" * 70)
     logger.info("STEP 2.7: EXPORT ERP")
+    if modules_filter:
+        logger.info(f"Modules: {', '.join(modules_filter)}")
     logger.info("=" * 70)
 
-    try:
-        # Check if required validated files exist
-        required_files = [
-            DATA_VALIDATED_DIR / "product_info.csv",
-            DATA_VALIDATED_DIR / "inventory.csv",
-            DATA_VALIDATED_DIR / "price_sale.csv",
-            DATA_VALIDATED_DIR / "enrichment.csv",
-        ]
+    all_succeeded = True
 
-        missing_files = [f for f in required_files if not f.exists()]
-        if missing_files:
-            logger.warning(
-                f"Missing validated files: {[f.name for f in missing_files]}"
+    # Export import_export_receipts (Products.xlsx)
+    if not modules_filter or "import_export_receipts" in modules_filter:
+        try:
+            from src.modules.import_export_receipts.generate_products_xlsx import (
+                process as generate_products,
             )
-            return False
 
-        # Create export directory
-        DATA_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            staging_dir = DATA_STAGING_DIR / "import_export"
+            if not staging_dir.exists():
+                logger.warning(f"Staging directory not found: {staging_dir}")
+            else:
+                logger.info("Generating Products.xlsx from staging data...")
+                output_path = generate_products(staging_dir=staging_dir)
 
-        # Export Products XLSX
-        logger.info("Exporting Products...")
-        output_path, stats = export_products_xlsx(
-            product_info_path=DATA_VALIDATED_DIR / "product_info.csv",
-            inventory_path=DATA_VALIDATED_DIR / "inventory.csv",
-            price_sale_path=DATA_VALIDATED_DIR / "price_sale.csv",
-            enrichment_path=DATA_VALIDATED_DIR / "enrichment.csv",
-            output_path=DATA_EXPORT_DIR / "Products.xlsx",
-        )
-        logger.info(f"Exported {stats['products_exported']} products to {output_path}")
-        return True
+                if output_path and output_path.exists():
+                    logger.info(f"Successfully generated: {output_path}")
+                else:
+                    logger.error("Products.xlsx generation failed")
+                    all_succeeded = False
 
-    except Exception as e:
-        logger.error(f"ERP export failed: {e}")
-        import traceback
+        except ImportError as e:
+            logger.error(f"Failed to import generate_products_xlsx: {e}")
+            all_succeeded = False
+        except Exception as e:
+            logger.error(f"ERP export failed: {e}")
+            import traceback
 
-        logger.error(traceback.format_exc())
-        return False
+            logger.error(traceback.format_exc())
+            all_succeeded = False
+
+    # Export receivable (Customers.xlsx) - if module exists
+    if not modules_filter or "receivable" in modules_filter:
+        try:
+            from src.modules.receivable.generate_customers_xlsx_v2 import (
+                process as generate_customers,
+            )
+
+            staging_dir = DATA_STAGING_DIR / "receivable"
+            if not staging_dir.exists():
+                logger.debug(f"Receivable staging directory not found: {staging_dir}")
+            else:
+                logger.info("Generating Customers.xlsx from staging data...")
+                output_path = generate_customers(staging_dir=staging_dir)
+
+                if output_path and output_path.exists():
+                    logger.info(f"Successfully generated: {output_path}")
+                else:
+                    logger.warning("Customers.xlsx generation failed")
+
+        except ImportError:
+            logger.debug("Receivable customers export not yet implemented")
+        except Exception as e:
+            logger.warning(f"Receivable export failed: {e}")
+
+    if all_succeeded:
+        logger.info("ERP export completed")
+    return all_succeeded
 
 
-def step_upload() -> bool:
-    """Step 3: Upload transformed and report files to respective target sheets."""
+def step_upload(modules_filter: Optional[List[str]] = None) -> bool:
+    """Step 3: Upload transformed and report files to respective target sheets.
+
+    Args:
+        modules_filter: List of modules to upload. If None, upload all available.
+    """
     logger.info("=" * 70)
     logger.info("STEP 3: UPLOAD")
+    if modules_filter:
+        logger.info(f"Modules: {', '.join(modules_filter)}")
     logger.info("=" * 70)
 
     try:
@@ -499,6 +627,42 @@ def step_upload() -> bool:
         list_csv_files(DATA_STAGING_DIR) if DATA_STAGING_DIR.exists() else []
     )
     report_files = list_csv_files(DATA_PRODUCT_DIR) if DATA_PRODUCT_DIR.exists() else []
+
+    # Filter files by module if filter specified
+    if modules_filter:
+        # Filter staging files by subdirectory
+        if staging_files:
+            staging_files = [
+                f
+                for f in staging_files
+                if any(
+                    str(MODULE_SUBDIRS.get(mod)) in str(f.parent)
+                    for mod in modules_filter
+                    if mod in MODULE_SUBDIRS
+                )
+            ]
+
+        # Filter cleaned files (legacy) by matching module prefixes
+        if cleaned_files:
+            cleaned_files = [
+                f
+                for f in cleaned_files
+                if any(
+                    f.name.startswith(prefix)
+                    for prefix in ["CT.NHAP", "CT.XUAT", "XNT", "receivable", "payable"]
+                )
+            ]
+
+        # Filter report files by module
+        if report_files:
+            report_files = [
+                f
+                for f in report_files
+                if any(
+                    f.name.lower().startswith(mod.lower().replace("_", ""))
+                    for mod in modules_filter
+                )
+            ]
 
     all_succeeded = True
 
@@ -569,21 +733,6 @@ def should_run_transform() -> bool:
     return False
 
 
-def should_run_generate_product_info(transform_succeeded: bool) -> bool:
-    """Determine if product info generation should run."""
-    if not transform_succeeded:
-        logger.info("Transform step did not succeed, skipping product info generation")
-        return False
-
-    staging_files = list_csv_files(DATA_STAGING_DIR)
-    if not staging_files:
-        logger.info("No staging files available for product generation")
-        return False
-
-    logger.info("Staging files ready for product info generation")
-    return True
-
-
 def should_run_upload(transform_succeeded: bool) -> bool:
     """Determine if upload step should run."""
     if not transform_succeeded:
@@ -602,49 +751,58 @@ def should_run_upload(transform_succeeded: bool) -> bool:
     return True
 
 
-def run_full_pipeline() -> bool:
-    """Run complete pipeline: ingest → transform → generate product info → upload."""
+def execute_pipeline(
+    steps: List[str], modules_filter: Optional[List[str]] = None
+) -> bool:
+    """Execute pipeline steps in order.
+
+    Args:
+        steps: List of steps to execute (e.g., ["ingest", "transform", "export"])
+        modules_filter: Optional list of modules to filter by
+
+    Returns:
+        True if all steps succeeded, False otherwise
+    """
     logger.info("\n" + "=" * 70)
-    logger.info("STARTING FULL PIPELINE")
+    logger.info(
+        f"PIPELINE: Steps={', '.join(steps)}",
+    )
+    if modules_filter:
+        logger.info(f"Modules={', '.join(modules_filter)}")
     logger.info("=" * 70 + "\n")
 
-    # Step 1: Ingest
-    if not step_ingest():
-        logger.error("Ingest failed, aborting pipeline")
-        return False
+    for step in steps:
+        if step == "ingest":
+            if not step_ingest(modules_filter=modules_filter):
+                logger.error("Ingest failed, aborting pipeline")
+                return False
 
-    # Step 2: Transform (conditional)
-    transform_succeeded = False
-    if should_run_transform():
-        transform_succeeded = step_transform()
-        if not transform_succeeded:
-            logger.error("Transform failed, aborting pipeline")
+        elif step == "transform":
+            transform_succeeded = False
+            if should_run_transform():
+                transform_succeeded = step_transform(modules_filter=modules_filter)
+                if not transform_succeeded:
+                    logger.error("Transform failed, aborting pipeline")
+                    return False
+            else:
+                logger.info("Skipping transform step (up-to-date)")
+                transform_succeeded = True
+
+        elif step == "export":
+            if not step_export_erp(modules_filter=modules_filter):
+                logger.error("ERP export failed, but continuing pipeline")
+
+        elif step == "upload":
+            if should_run_upload(transform_succeeded):
+                if not step_upload(modules_filter=modules_filter):
+                    logger.error("Upload failed, but data is ready")
+                    return False
+            else:
+                logger.info("Skipping upload step (no files to upload)")
+
+        else:
+            logger.error(f"Unknown step: {step}")
             return False
-    else:
-        logger.info("Skipping transform step")
-        transform_succeeded = True
-
-    # Step 2.5: Generate product info (conditional, legacy)
-    if should_run_generate_product_info(transform_succeeded):
-        if not step_generate_product_info():
-            logger.error("Product info generation failed, but continuing to upload")
-    else:
-        logger.info("Skipping product info generation step")
-
-    # Step 2.7: Export ERP (conditional)
-    if transform_succeeded:
-        if not step_export_erp():
-            logger.error("ERP export failed, but continuing to upload")
-    else:
-        logger.info("Skipping ERP export step")
-
-    # Step 3: Upload (conditional)
-    if should_run_upload(transform_succeeded):
-        if not step_upload():
-            logger.error("Upload failed, but data is ready")
-            return False
-    else:
-        logger.info("Skipping upload step")
 
     logger.info("\n" + "=" * 70)
     logger.info("PIPELINE COMPLETED SUCCESSFULLY")
@@ -658,30 +816,101 @@ def run_full_pipeline() -> bool:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Data Pipeline: Ingest → Transform → Upload"
+        description="Data Pipeline: Ingest → Transform → Export → Upload",
+        epilog="""
+Examples:
+  # Full pipeline on all modules
+  uv run src/pipeline/orchestrator.py
+
+  # Full pipeline on specific modules (short flags)
+  uv run src/pipeline/orchestrator.py -m ier
+  uv run src/pipeline/orchestrator.py -m rec,pay
+
+  # Part of pipeline on all modules (short flags)
+  uv run src/pipeline/orchestrator.py -s ingest,transform
+  uv run src/pipeline/orchestrator.py -s transform
+
+  # Part of pipeline on specific modules (combined short flags)
+  uv run src/pipeline/orchestrator.py -s transform -m ier
+  uv run src/pipeline/orchestrator.py -s transform,export -m rec
+
+  # Single-step shortcuts
+  uv run src/pipeline/orchestrator.py -i    # ingest only
+  uv run src/pipeline/orchestrator.py -t    # transform only
+  uv run src/pipeline/orchestrator.py -e    # export only
+  uv run src/pipeline/orchestrator.py -u    # upload only
+
+  # Products workflow shortcut
+  uv run src/pipeline/orchestrator.py -P    # products-only
+
+Module Aliases: ier=import_export_receipts, rec=receivable, pay=payable, cash=cashflow
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    # Steps arguments
+    parser.add_argument(
+        "-s",
+        "--steps",
+        type=str,
+        help="Comma-separated list of steps to run (ingest,transform,export,upload). Default: all steps",
     )
     parser.add_argument(
         "--step",
         choices=["ingest", "transform", "upload", "export"],
-        help="Run a specific step only",
+        help="[LEGACY] Run a specific step only (use -i/-t/-e/-u for shortcuts)",
     )
-    parser.add_argument(
-        "--full",
-        action="store_true",
-        default=False,
-        help="Run full pipeline (default if no step specified)",
+
+    # Single-step shortcuts
+    step_group = parser.add_mutually_exclusive_group()
+    step_group.add_argument(
+        "-i",
+        dest="step",
+        action="store_const",
+        const="ingest",
+        help="Run ingest step only",
     )
+    step_group.add_argument(
+        "-t",
+        dest="step",
+        action="store_const",
+        const="transform",
+        help="Run transform step only",
+    )
+    step_group.add_argument(
+        "-e",
+        dest="step",
+        action="store_const",
+        const="export",
+        help="Run export step only",
+    )
+    step_group.add_argument(
+        "-u",
+        dest="step",
+        action="store_const",
+        const="upload",
+        help="Run upload step only",
+    )
+
+    # Module arguments
     parser.add_argument(
-        "--resources",
+        "-m",
+        "--modules",
         type=str,
-        help="Comma-separated list of raw sources to process (import_export_receipts,receivable,payable,cashflow). "
-        "Default: all sources",
+        help="Comma-separated list of modules to process (ier,rec,pay,cash or full names). "
+        "Default: all modules",
     )
     parser.add_argument(
+        "-P",
         "--products-only",
         action="store_true",
         default=False,
         help="Only run ingest & export steps for Products.xlsx (skip transform & upload)",
+    )
+    parser.add_argument(
+        "--resources",
+        type=str,
+        help="[DEPRECATED] Use --modules instead",
     )
 
     args = parser.parse_args()
@@ -694,26 +923,72 @@ def main():
     DATA_FINAL_DIR.mkdir(parents=True, exist_ok=True)
     DATA_PRODUCT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Store resource filter in environment if provided
-    if args.resources:
-        os.environ["PIPELINE_RESOURCES"] = args.resources
+    # Parse modules filter
+    modules_filter = None
+    if args.modules:
+        raw_modules = [m.strip() for m in args.modules.split(",")]
+        # Resolve aliases
+        modules_filter = []
+        invalid_modules = []
+        for m in raw_modules:
+            if m in TRANSFORM_MODULES:
+                modules_filter.append(m)
+            elif m in MODULE_ALIASES:
+                modules_filter.append(MODULE_ALIASES[m])
+            else:
+                invalid_modules.append(m)
 
-    # Handle products-only shortcut
+        if invalid_modules:
+            logger.error(f"Invalid modules: {invalid_modules}")
+            logger.error(
+                f"Valid modules: {', '.join(list(TRANSFORM_MODULES.keys()) + list(MODULE_ALIASES.keys()))}"
+            )
+            sys.exit(1)
+    elif args.resources:
+        # Deprecated --resources flag (map to modules for backward compat)
+        logger.warning("--resources is deprecated, use --modules instead")
+        modules_filter = [r.strip() for r in args.resources.split(",")]
+
+    # Parse steps to run
     if args.products_only:
+        # Legacy shortcut
         logger.info("\n" + "=" * 70)
         logger.info("PRODUCTS-ONLY MODE: Ingest → Export Products.xlsx")
         logger.info("=" * 70 + "\n")
-        success = step_ingest() and step_export_erp()
-    elif args.step == "ingest":
-        success = step_ingest()
-    elif args.step == "transform":
-        success = step_transform()
-    elif args.step == "upload":
-        success = step_upload()
-    elif args.step == "export":
-        success = step_export_erp()
+        success = step_ingest(
+            modules_filter=["import_export_receipts"]
+        ) and step_export_erp(modules_filter=["import_export_receipts"])
+    elif args.step:
+        # Legacy single step
+        logger.info(f"Running single step: {args.step}")
+        modules_for_step = modules_filter
+        if args.step == "ingest":
+            success = step_ingest(modules_filter=modules_for_step)
+        elif args.step == "transform":
+            success = step_transform(modules_filter=modules_for_step)
+        elif args.step == "upload":
+            success = step_upload(modules_filter=modules_for_step)
+        elif args.step == "export":
+            success = step_export_erp(modules_filter=modules_for_step)
+        else:
+            success = False
+    elif args.steps:
+        # New multi-step execution
+        steps = [s.strip() for s in args.steps.split(",")]
+        # Validate step names
+        valid_steps = ["ingest", "transform", "export", "upload"]
+        invalid_steps = [s for s in steps if s not in valid_steps]
+        if invalid_steps:
+            logger.error(f"Invalid steps: {invalid_steps}")
+            logger.error(f"Valid steps: {', '.join(valid_steps)}")
+            sys.exit(1)
+        success = execute_pipeline(steps=steps, modules_filter=modules_filter)
     else:
-        success = run_full_pipeline()
+        # Default: full pipeline
+        success = execute_pipeline(
+            steps=["ingest", "transform", "export", "upload"],
+            modules_filter=modules_filter,
+        )
 
     sys.exit(0 if success else 1)
 

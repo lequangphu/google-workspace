@@ -27,8 +27,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from src.modules.lineage import DataLineage
-
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -36,7 +34,6 @@ from src.modules.lineage import DataLineage
 # Data folder paths (from data/README.md: ingest → staging)
 DATA_RAW_DIR = Path.cwd() / "data" / "00-raw" / "import_export"
 DATA_STAGING_DIR = Path.cwd() / "data" / "01-staging" / "import_export"
-DATA_LINEAGE_DIR = Path.cwd() / "data" / ".lineage"  # Centralized lineage storage
 
 FILE_PATTERN = "*CT.XUAT.csv"
 
@@ -349,13 +346,12 @@ def standardize_column_types(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def process_groups(
-    grouped_files: Dict, lineage: Optional[DataLineage] = None
+    grouped_files: Dict,
 ) -> pd.DataFrame:
-    """Process each file group and combine into single DataFrame with lineage tracking.
+    """Process each file group and combine into single DataFrame.
 
     Args:
         grouped_files: Dict mapping header tuples to file paths
-        lineage: Optional DataLineage tracker for audit trail
     """
     combined_dfs = {}
 
@@ -366,16 +362,6 @@ def process_groups(
         for filepath in filepaths:
             df = read_csv_file(filepath, header_tuple)
             if df is not None:
-                # Track lineage for all rows in this file
-                for idx in range(len(df)):
-                    if lineage:
-                        lineage.track(
-                            source_file=filepath.name,
-                            source_row=idx,
-                            output_row=row_counter + idx,
-                            operation="process_groups",
-                            status="success",
-                        )
                 row_counter += len(df)
                 dfs_for_group.append(df)
 
@@ -517,7 +503,6 @@ def generate_output_filename(df: pd.DataFrame) -> str:
 def create_reconciliation_checkpoint(
     input_dir: Path,
     output_filepath: Path,
-    lineage: DataLineage,
     script_name: str = "clean_receipts_sale",
 ) -> Dict[str, Any]:
     """Reconcile input vs output quantities with detailed breakdown.
@@ -525,7 +510,6 @@ def create_reconciliation_checkpoint(
     Args:
         input_dir: Path to raw import_export directory
         output_filepath: Path to output CSV file
-        lineage: DataLineage tracker with success/rejection stats
         script_name: Name of script for report identification
 
     Returns:
@@ -561,10 +545,7 @@ def create_reconciliation_checkpoint(
     )
     output_row_count = len(output_df)
 
-    # Step 3: Get lineage summary
-    lineage_data = lineage.summary()
-
-    # Step 4: Build reconciliation report
+    # Step 3: Build reconciliation report
     total_input_qty = sum(input_totals.values())
     total_input_rows = sum(input_row_counts.values())
 
@@ -591,12 +572,6 @@ def create_reconciliation_checkpoint(
                 else 0
             ),
         },
-        "lineage": {
-            "total_tracked": lineage_data["total"],
-            "success": lineage_data["success"],
-            "rejected": lineage_data["rejected"],
-            "success_rate": lineage_data["success_rate"],
-        },
         "alerts": [],
     }
 
@@ -605,12 +580,6 @@ def create_reconciliation_checkpoint(
         report["alerts"].append(
             f"⚠️ WARNING: {report['reconciliation']['quantity_dropout_pct']:.1f}% "
             f"quantity dropped ({total_input_qty:,.0f} → {output_total_qty:,.0f})"
-        )
-
-    if report["lineage"]["rejected"] > total_input_rows * 0.01:
-        report["alerts"].append(
-            f"⚠️ WARNING: {report['lineage']['rejected']} rows rejected "
-            f"({report['lineage']['success_rate']:.1f}% success rate)"
         )
 
     # Step 6: Save reconciliation report
@@ -660,10 +629,6 @@ def transform_sale_receipts(
     if output_dir is None:
         output_dir = DATA_STAGING_DIR
 
-    # Initialize lineage tracking (ADR-5)
-    DATA_LINEAGE_DIR.mkdir(parents=True, exist_ok=True)
-    lineage = DataLineage(DATA_LINEAGE_DIR)
-
     # Find all CSV files
     csv_files = list(input_dir.glob(FILE_PATTERN))
     if not csv_files:
@@ -683,8 +648,8 @@ def transform_sale_receipts(
 
     logger.info(f"Grouped files into {len(grouped_files_by_header)} header patterns")
 
-    # Process all groups with lineage tracking
-    final_df = process_groups(grouped_files_by_header, lineage)
+    # Process all groups
+    final_df = process_groups(grouped_files_by_header)
     if final_df.empty:
         logger.error("No data processed")
         return None
@@ -749,23 +714,8 @@ def transform_sale_receipts(
     logger.info(f"Summary rows: {len(summary_df)}, Columns: {len(summary_df.columns)}")
     logger.info("=" * 70)
 
-    # Save lineage audit trail (ADR-5)
-    logger.info("=" * 70)
-    logger.info("Saving data lineage audit trail")
-    lineage.save()
-    lineage_summary = lineage.summary()
-    logger.info(
-        f"Lineage saved: Total={lineage_summary['total']}, "
-        f"Success={lineage_summary['success']}, "
-        f"Rejected={lineage_summary['rejected']}, "
-        f"Success Rate={lineage_summary['success_rate']:.1f}%"
-    )
-    logger.info("=" * 70)
-
-    # Step: Reconciliation check (ADR-5: Audit trail for data integrity)
-    reconciliation = create_reconciliation_checkpoint(
-        input_dir, output_filepath, lineage, "clean_receipts_sale"
-    )
+    # Reconciliation check
+    create_reconciliation_checkpoint(input_dir, output_filepath, "clean_receipts_sale")
 
     return output_filepath
 

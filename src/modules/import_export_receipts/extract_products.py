@@ -1,5 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Extract product information from cleaned receipt data.
+"""
+DEPRECATED: This module is deprecated as of December 2025.
+
+Functionality has been migrated to:
+- src/modules/import_export_receipts/generate_products_xlsx.py (Products.xlsx generation)
+
+This module will be removed on 2026-01-14 (2 weeks from migration).
+
+Original docstring:
+---
+
+Extract product information from cleaned receipt data.
 
 This module processes cleaned import and export receipt data to generate:
 1. Product info: Assigns sequential codes (HH000001, etc.) to products
@@ -414,8 +425,8 @@ def process_nhap_data(staging_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
     product_df = product_df.sort_values(by="_sort_key", na_position="last")
     product_df = product_df.drop(columns=["_sort_key"])
 
-    # Assign sequential product codes
-    product_df["Mã hàng mới"] = [f"HH{i + 1:06d}" for i in range(len(product_df))]
+    # Assign product codes with SPC prefix (sản phẩm cũ)
+    product_df["Mã hàng mới"] = "SPC" + product_df["Mã hàng"].astype(str)
 
     # Split into two outputs
     # 1. Product info: Mã hàng mới | Mã hàng
@@ -1248,8 +1259,7 @@ def process(staging_dir: Optional[Path] = None) -> Optional[Path]:
         output_dir = CONFIG["validated_dir"]
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Step 9: Standardize brand names and save product info
-        product_info_df = standardize_brand_names(product_info_df)
+        # Step 9: Save product info
         product_path = output_dir / CONFIG["product_file"]
         product_info_df.sort_values("Mã hàng mới").to_csv(
             product_path, index=False, encoding="utf-8"
@@ -1324,36 +1334,16 @@ def process(staging_dir: Optional[Path] = None) -> Optional[Path]:
         else:
             logger.warning("No gross profit data generated")
 
-        # Step 16: Calculate revenue and gross profit by dimensions
-        logger.info("=" * 70)
-        logger.info("Calculating revenue and gross profit by dimensions")
-        logger.info("=" * 70)
-
-        xuat_with_cogs_df = calculate_cogs_per_transaction(nhap_raw_df, xuat_raw_df)
-        lookup_df = fetch_product_lookup()
-        revenue_profit_df = process_revenue_profit_by_dimensions(
-            xuat_with_cogs_df, nhap_raw_df, lookup_df
-        )
-
-        if not revenue_profit_df.empty:
-            revenue_profit_path = output_dir / CONFIG["revenue_profit_file"]
-            revenue_profit_df.to_csv(revenue_profit_path, index=False, encoding="utf-8")
-            logger.info(f"Revenue/Profit by dimensions saved to: {revenue_profit_path}")
-            logger.info(f"  Columns: {', '.join(revenue_profit_df.columns)}")
-            logger.info(f"  Total combinations: {len(revenue_profit_df)}")
-        else:
-            logger.warning("No revenue/profit by dimensions data generated")
-
-        # Step 17: Enrich with product lookup and save enrichment
-
-        # Step 17: Enrich with product lookup and save enrichment
+        # Step 16: Enrich with product lookup, standardize brand names, and save enrichment
         logger.info("=" * 70)
         logger.info("Creating product enrichment (Nhóm hàng, Thương hiệu)")
         logger.info("=" * 70)
 
+        lookup_df = fetch_product_lookup()
         enrichment_df = enrich_product_data(product_info_df, lookup_df)
 
         if not enrichment_df.empty:
+            enrichment_df = standardize_brand_names(enrichment_df)
             enrichment_path = output_dir / CONFIG["enrichment_file"]
             enrichment_df.to_csv(enrichment_path, index=False, encoding="utf-8")
             logger.info(f"Enrichment data saved to: {enrichment_path}")

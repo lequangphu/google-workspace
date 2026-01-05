@@ -1,109 +1,51 @@
-# Google Workspace Automation
+# Tire Shop ERP Migration
 
-Automated workflows for Google Workspace using Python. Handles data ingestion from Google Drive, cleaning, and analysis.
+Data pipeline for migrating business data from Google Sheets to KiotViet ERP.
 
-## Structure
-
-- **Types** - Python data pipeline (uv package manager)
-- **`AGENTS.md`** - Development guidelines and setup instructions
-
-## Setup
-
-### Prerequisites
-
-- Python 3.14+
-- Google Account with Drive access
-
-### Installation
+## Quick Start
 
 ```bash
-# Setup Python environment
+# Install dependencies
 uv sync
-```
 
-## Python Data Pipeline
-
-Orchestrates a three-stage data pipeline: **ingest** → **clean** → **combine**
-
-### Quick Start
-
-```bash
 # Run full pipeline
-uv run python main.py
+uv run src/pipeline/orchestrator.py
 
-# Test mode (download 1 of each file type)
-uv run python pipeline.py --test
-
-# Clear old raw data and ingest fresh
-uv run python pipeline.py --clean-up
-```
-
-### Pipeline Stages
-
-1. **Ingest** - Downloads CSV files from Google Drive to `data/raw/`
-2. **Clean** - Processes and validates data from `data/raw/` → `data/interim/`
-3. **Combine** - Merges cleaned data by type into `data/final/`
-
-### Individual Commands
-
-```bash
 # Ingest only
-uv run python ingest.py
+uv run src/modules/ingest.py
 
-# Skip ingestion, clean existing data
-uv run python pipeline.py --skip-ingest
+# Transform only (skip ingestion)
+uv run src/pipeline/orchestrator.py --step transform
 
-# Skip combine step
-uv run python pipeline.py --skip-combine
+# With specific period
+uv run src/pipeline/orchestrator.py --period 2025_01
 ```
 
-### Data Structure
+## Architecture
 
-```
-data/
-├── raw/       # Raw CSV files from Google Drive
-├── interim/   # Cleaned and validated CSV files
-└── final/     # Combined/aggregated CSV files
-```
+**Pipeline stages**: `ingest` → `transform` → `validate` → `export`
 
-### Supported File Types
+**Data directories**:
+- `data/00-raw/` - Raw CSVs from Google Drive
+- `data/01-staging/` - Cleaned/transformed data
+- `data/02-validated/` - Master data extracted
+- `data/03-erp-export/` - KiotViet XLSX files
 
-- `CT.NHAP` - Import data
-- `CT.XUAT` - Export data
-- `XNT` - Other data type
+## Documentation
 
-Files are named: `{YEAR}_{MONTH}_{TYPE}.csv` (e.g., `2023_5_CT.NHAP.csv`)
+| Document | Purpose |
+|----------|---------|
+| `AGENTS.md` | Development guidelines for AI agents |
+| `docs/architecture-decisions.md` | ADR records for key design choices |
+| `docs/development-workflow.md` | Git workflow, commits, code style |
+| `docs/pipeline-io.md` | Complete I/O mapping for all scripts |
+| `docs/refactoring-roadmap.md` | Legacy migration status |
 
-### Configuration
+## Raw Sources
 
-Dataset cleaning rules defined in `cleaning_configs.py`:
-
-```python
-CONFIGS = {
-    'CT.NHAP': {
-        'header_rows': [3, 4],
-        'numeric_cols': [...],
-        'date_cols': {...},
-        'key_col': 'mã_hh',
-    },
-}
-```
-
-To add new dataset types:
-1. Add config to `CONFIGS` in `cleaning_configs.py`
-2. Name raw files with the matching suffix
-3. Pipeline auto-routes by suffix match
-
-## Dependencies
-
-- `google-api-python-client` - Google Drive API
-- `google-auth-oauthlib` - Google authentication
-- `pandas` - Data manipulation
-
-## License
-
-ISC
-
-## Author
-
-Lê Quang Phú
+| Source | Description | Output |
+|--------|-------------|--------|
+| `import_export_receipts` | Purchase (CT.NHAP), Sale (CT.XUAT), Inventory (XNT) | Products, PriceBook |
+| `receivable` | Customer debts, customer info | Customers |
+| `payable` | Supplier master, debt summary | Suppliers |
+| `cashflow` | Bank deposits, cash transactions | (reporting only) |

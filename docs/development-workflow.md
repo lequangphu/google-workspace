@@ -2,6 +2,8 @@
 globs:
   - 'src/**/*.py'
   - 'tests/**/*.py'
+  - 'pipeline.toml'
+  - 'src/erp/**/*.py'
 ---
 
 # Development Workflow – Git, Commits & Pre-commit Checklist
@@ -155,14 +157,16 @@ src/modules/payable/extract_suppliers.py  →  tests/test_payable_extract_suppli
 ### Running the Pipeline
 
 ```bash
-# Full pipeline
-uv run src/cli.py
+# Full pipeline (ingest → transform → export)
+uv run src/pipeline/orchestrator.py
 
 # Specific step only
-uv run src/cli.py --step transform
+uv run src/pipeline/orchestrator.py --step ingest
+uv run src/pipeline/orchestrator.py --step transform
+uv run src/pipeline/orchestrator.py --step export
 
 # With options
-uv run src/cli.py --period 2025_02 --bundle
+uv run src/pipeline/orchestrator.py --period 2025_02
 
 # Tests
 uv run pytest tests/ -v

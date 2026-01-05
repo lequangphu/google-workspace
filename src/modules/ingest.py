@@ -305,6 +305,11 @@ Available sources: {}
         action="store_true",
         help="Remove existing data/00-raw/ directory first",
     )
+    parser.add_argument(
+        "--validate-args",
+        action="store_true",
+        help="Validate arguments and exit without connecting to Drive",
+    )
 
     args = parser.parse_args()
 
@@ -342,6 +347,21 @@ Available sources: {}
         sources_to_ingest = [s for s in RAW_SOURCES.keys() if s not in skip_sources]
         logger.info(f"Skipping: {', '.join(skip_sources)}")
         logger.info(f"Ingesting: {', '.join(sources_to_ingest)}")
+
+    # Validate args mode: exit early without connecting to Drive
+    if args.validate_args:
+        logger.info("=" * 70)
+        logger.info("ARGUMENT VALIDATION MODE")
+        logger.info("=" * 70)
+        if sources_to_ingest is None:
+            sources_to_ingest = list(RAW_SOURCES.keys())
+        logger.info(f"Sources to ingest: {sources_to_ingest}")
+        logger.info(f"Test mode: {args.test_mode}")
+        logger.info(f"Cleanup: {args.cleanup}")
+        logger.info(f"Clear cache: {args.clear_cache}")
+        logger.info("=" * 70)
+        logger.info("Arguments validated successfully. No API calls made.")
+        sys.exit(0)
 
     # Clear cache if requested
     if args.clear_cache:

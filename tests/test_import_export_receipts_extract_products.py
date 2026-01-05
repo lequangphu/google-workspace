@@ -1,5 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Tests for extract_products module."""
+"""
+DEPRECATED: This test file is deprecated as of December 2025.
+
+Tests have been migrated to:
+- tests/test_import_export_receipts_generate_products_xlsx.py
+
+This file will be removed on 2026-01-14 (2 weeks from migration).
+
+---
+
+Tests for extract_products module.
+"""
 
 import logging
 from pathlib import Path

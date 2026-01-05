@@ -73,3 +73,20 @@ output_file = "cashflow_cash"
 [enrichment]
 product_lookup_spreadsheet_id = "16bGN2gjWspCqlFD4xB--7WtkYtTpDaWzRQx9sV97ed8"
 product_lookup_sheet_gid = 23224859
+
+# Migration filter settings for products.xlsx export
+[migration_filter]
+sales_recency_threshold = "2025-01-01"
+min_inventory_qty = 0
+product_code_prefix = "SPC"
+
+# Customer export settings
+[customer_export]
+transaction_cutoff_date = "2024-01-01"
+
+# Opening balance generation settings (auto-detects earliest month from inventory)
+[opening_balance]
+receipt_date = "2020-03-31"
+receipt_code_prefix = "PN-OB"
+supplier_name = "Kho đầu kỳ"
+quantity_price_tolerance_pct = 5.0

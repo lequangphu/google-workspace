@@ -148,7 +148,7 @@ data/02-validated/
 | **Input** | `data/01-staging/import_export/chi_tiet_xuat_cleaned.csv` |
 | **Process** | Group by customer, rank by date + amount, assign sequential IDs |
 | **Output** | Customer list with generated IDs |
-| **Storage** | `data/01-staging/receivable/extract_customer_ids.csv` |
+| **Storage** | `data/01-staging/receivable/` |
 
 **Columns:**
 - Mã khách hàng (KH000001...), Tên khách hàng, Ngày giao dịch đầu, Ngày giao dịch cuối, Tổng tiền bán
@@ -224,11 +224,11 @@ data/
 │   ├── price_sale.csv
 │   └── gross_profit.csv
 │
-├── 03-erp-export/               [Final XLSX - TO BE CREATED]
+├── 03-erp-export/               [Final XLSX exports]
 │   ├── Products.xlsx            ← extract_products.py → exporter.py
-│   ├── Customers.xlsx           ← (future)
-│   ├── Suppliers.xlsx           ← (future)
-│   └── PriceBook.xlsx           ← (future)
+│   ├── Customers.xlsx
+│   ├── Suppliers.xlsx
+│   └── PriceBook.xlsx
 │
 ├── templates/
 │   ├── MauFileSanPham.xlsx      [27-column Products template]
@@ -236,8 +236,7 @@ data/
 │   ├── MauFileNhaCungCap.xlsx   [15-column Suppliers template]
 │   └── MauFileBangGia.xlsx      [5-column PriceBook template]
 │
-└── .cache/
-    └── hash_cache.json          [Content-hash caching for incremental runs]
+└── .drive_manifest.json        [Google Drive folder→sheet cache]
 ```
 
 ---

@@ -26,8 +26,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from src.modules.lineage import DataLineage
-
 # ============================================================================
 # CONFIGURATION (ADR-1: Configuration-Driven Pipeline)
 # ============================================================================
@@ -335,14 +333,12 @@ def load_and_extract_headers(
 def process_group_data(
     files_and_indices_list: List[Tuple[Path, List[int]]],
     common_headers: List[str],
-    lineage: Optional[DataLineage] = None,
 ) -> pd.DataFrame:
     """Process data for a single group of files with same headers.
 
     Args:
         files_and_indices_list: List of (file_path, original_indices) tuples
         common_headers: List of column names
-        lineage: Optional DataLineage tracker for audit trail
 
     Returns:
         pd.DataFrame: Merged DataFrame for the group
@@ -380,27 +376,7 @@ def process_group_data(
                             for idx in original_indices
                         ]
                         processed_data.append(new_row)
-
-                    # Track successful row processing
-                    if lineage:
-                        lineage.track(
-                            source_file=filename,
-                            source_row=row_idx,
-                            output_row=len(processed_data) - 1,
-                            operation="process_group_data",
-                            status="success",
-                        )
-
                 except Exception as e:
-                    # Track rejected row
-                    if lineage:
-                        lineage.track(
-                            source_file=filename,
-                            source_row=row_idx,
-                            output_row=None,
-                            operation="process_group_data",
-                            status=f"rejected: {str(e)}",
-                        )
                     logger.warning(f"Row {row_idx} in {filename} rejected: {e}")
                     continue
 
@@ -569,7 +545,7 @@ def generate_output_filename(df: pd.DataFrame) -> str:
 
 
 def create_reconciliation_checkpoint(
-    input_dir: Path, output_filepath: Path, lineage: DataLineage
+    input_dir: Path, output_filepath: Path
 ) -> Dict[str, Any]:
     """Reconcile input vs output quantities with detailed breakdown.
 
@@ -580,7 +556,6 @@ def create_reconciliation_checkpoint(
     Args:
         input_dir: Path to raw import_export directory
         output_filepath: Path to output CSV file
-        lineage: DataLineage tracker with success/rejection stats
 
     Returns:
         dict: Reconciliation report with input/output/dropout by file, and alerts
@@ -647,10 +622,7 @@ def create_reconciliation_checkpoint(
             except (ValueError, TypeError, AttributeError):
                 pass
 
-    # Step 4: Get lineage summary
-    lineage_data = lineage.summary()
-
-    # Step 5: Build file-by-file dropout breakdown (only files with dropout > 0)
+    # Step 4: Build file-by-file dropout breakdown (only files with dropout > 0)
     file_dropout = {}
     for filename in sorted(input_totals.keys()):
         input_qty = input_totals[filename]
@@ -692,12 +664,6 @@ def create_reconciliation_checkpoint(
             ),
         },
         "dropout_by_file": file_dropout,
-        "lineage": {
-            "total_tracked": lineage_data["total"],
-            "success": lineage_data["success"],
-            "rejected": lineage_data["rejected"],
-            "success_rate": lineage_data["success_rate"],
-        },
         "alerts": [],
     }
 
@@ -710,12 +676,6 @@ def create_reconciliation_checkpoint(
             f"⚠️ WARNING: {report['reconciliation']['quantity_dropout_pct']:.1f}% "
             f"quantity dropped ({total_input_qty:,.0f} → {output_total_qty:,.0f}) "
             f"[Expected ~9.6% from warehouse filtering]"
-        )
-
-    if report["lineage"]["rejected"] > total_input_rows * 0.01:
-        report["alerts"].append(
-            f"⚠️ WARNING: {report['lineage']['rejected']} rows rejected "
-            f"({report['lineage']['success_rate']:.1f}% success rate)"
         )
 
     # Step 8: Log file-level dropouts exceeding 15%
@@ -731,7 +691,7 @@ def create_reconciliation_checkpoint(
         )
 
     # Step 9: Save reconciliation report
-    report_filename = f"reconciliation_report_clean_receipts_purchase.json"
+    report_filename = "reconciliation_report_clean_receipts_purchase.json"
     report_path = output_filepath.parent / report_filename
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
@@ -776,9 +736,6 @@ def transform_purchase_receipts(
     if output_dir is None:
         output_dir = DATA_STAGING_DIR
 
-    # Initialize lineage tracking (ADR-5)
-    lineage = DataLineage(output_dir)
-
     # Find files matching pattern
     file_pattern = "*CT.NHAP.csv"
     matching_files = list(input_dir.glob(file_pattern))
@@ -797,11 +754,11 @@ def transform_purchase_receipts(
     for file_path, (headers, indices) in file_headers_map.items():
         grouped_files[tuple(headers)].append((file_path, indices))
 
-    # Step 3: Process each group with lineage tracking
+    # Step 3: Process each group
     merged_dataframes = {}
     for i, (headers_tuple, files_and_indices) in enumerate(grouped_files.items()):
         common_headers = list(headers_tuple)
-        merged_df = process_group_data(files_and_indices, common_headers, lineage)
+        merged_df = process_group_data(files_and_indices, common_headers)
 
         if not merged_df.empty:
             merged_dataframes[f"Group_{i + 1}"] = merged_df
@@ -877,26 +834,11 @@ def transform_purchase_receipts(
     logger.info(f"Summary rows: {len(summary_df)}, Columns: {len(summary_df.columns)}")
     logger.info("=" * 70)
 
-    # Save lineage audit trail (ADR-5)
-    logger.info("=" * 70)
-    logger.info("Saving data lineage audit trail")
-    lineage.save()
-    lineage_summary = lineage.summary()
-    logger.info(
-        f"Lineage saved: Total={lineage_summary['total']}, "
-        f"Success={lineage_summary['success']}, "
-        f"Rejected={lineage_summary['rejected']}, "
-        f"Success Rate={lineage_summary['success_rate']:.1f}%"
-    )
-    logger.info("=" * 70)
-
-    # Step 11: Reconciliation check (ADR-5: Audit trail for data integrity)
-    reconciliation = create_reconciliation_checkpoint(
-        input_dir, output_filepath, lineage
-    )
+    # Step 11: Reconciliation check
+    reconciliation = create_reconciliation_checkpoint(input_dir, output_filepath)
 
     if reconciliation["reconciliation"]["quantity_dropout_pct"] > 20:
-        report_filename = f"reconciliation_report_clean_receipts_purchase.json"
+        report_filename = "reconciliation_report_clean_receipts_purchase.json"
         raise ValueError(
             f"Reconciliation failed: {reconciliation['reconciliation']['quantity_dropout_pct']:.1f}% "
             f"quantity lost (threshold: 20%). See {report_filename} for details. "

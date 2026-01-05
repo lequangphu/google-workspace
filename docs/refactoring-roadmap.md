@@ -28,14 +28,15 @@ Legacy scripts are being refactored into raw source modules for better organizat
 | Current Script | Target Module | Target File | Status |
 |---|---|---|---|
 | `ingest.py` | `src/modules/` | `ingest.py` + `google_api.py` | ✅ **Migrated** (b7a22c2) - Multi-sheet support, rate limiting |
-| `clean_chung_tu_nhap.py` | `import_export_receipts` | `clean_receipts_purchase.py` | ✅ **Migrated** (T-019b5f16) - CT.NHAP processing, date parsing, lineage tracking |
-| `clean_chung_tu_xuat.py` | `import_export_receipts` | `clean_receipts_sale.py` | ✅ **Migrated** (T-019b5f24) - CT.XUAT processing, validated on 67 files |
-| `clean_xuat_nhap_ton.py` | `import_export_receipts` | `clean_inventory.py` | ✅ **Migrated** (T-019b5f24) - XNT processing, 48,272 rows, FIFO-ready |
-| `generate_product_info.py` | `import_export_receipts` | `extract_products.py` | ✅ **Migrated** (T-019b5f24) - Product extraction, FIFO costing, price analysis |
-| `clean_thong_tin_khach_hang.py` | `receivable` | `clean_customers.py` | ✅ **Migrated** (T-019b5f24) - Customer import, phone number splitting |
-| `generate_new_customer_id.py` | `receivable` | `extract_customer_ids.py` | ✅ **Migrated** (T-019b5f31) - Customer ID generation from CT.XUAT, sequential ranking |
-| `clean_tong_no.py` | `receivable` | `clean_debts.py` | ✅ **Migrated** (T-019b624e) - Debt info transformation, two-level customer join |
-| `pipeline.py` | `src/pipeline/` | `orchestrator.py` | ✅ **Migrated** (T-019b625e) - Pipeline orchestration, ingest → transform → upload |
+| `clean_chung_tu_nhap.py` | `import_export_receipts` | `clean_receipts_purchase.py` | ✅ **Migrated** - CT.NHAP processing, date parsing |
+| `clean_chung_tu_xuat.py` | `import_export_receipts` | `clean_receipts_sale.py` | ✅ **Migrated** - CT.XUAT processing, validated on 67 files |
+| `clean_xuat_nhap_ton.py` | `import_export_receipts` | `clean_inventory.py` | ✅ **Migrated** - XNT processing, 48,272 rows, FIFO-ready |
+| `generate_product_info.py` | `import_export_receipts` | `extract_products.py` | ✅ **Migrated** - Product extraction, FIFO costing, price analysis |
+| N/A | `import_export_receipts` | `generate_products_xlsx.py` | ✅ **Added** - Products XLSX export |
+| N/A | `import_export_receipts` | `extract_attributes.py` | ✅ **Added** - Attribute extraction |
+| N/A | `import_export_receipts` | `reconcile_inventory.py` | ✅ **Added** - Inventory reconciliation |
+| N/A | `receivable` | `generate_customers_xlsx_v2.py` | ✅ **Added** - Customers XLSX export |
+| N/A | `payable` | `generate_suppliers_xlsx.py` | ✅ **Added** - Suppliers XLSX export |
 
 ## Pipeline Flow (ingest → transform by raw source → validate → export)
 
@@ -43,20 +44,21 @@ Legacy scripts are being refactored into raw source modules for better organizat
 Raw CSV from Google Drive
     ↓
 Import/Export Receipts:
-  ├── clean_receipts_purchase.py (CT.NHAP) → Products + PriceBook
+  ├── clean_receipts_purchase.py (CT.NHAP)
   ├── clean_receipts_sale.py (CT.XUAT)
   ├── clean_inventory.py (XNT)
-  └── extract_products.py
+  ├── extract_products.py → Products master data
+  ├── extract_attributes.py → Product attributes
+  └── reconcile_inventory.py → Inventory reconciliation
     ↓
 Receivable:
-  ├── clean_customers.py → Customers
-  └── extract_customer_ids.py
+  └── generate_customers_xlsx_v2.py → Customers XLSX
     ↓
 Payable:
-  └── extract_suppliers.py → Suppliers
+  └── generate_suppliers_xlsx.py → Suppliers XLSX
     ↓
 CashFlow:
-  └── transform.py (reporting only)
+  └── (future)
     ↓
 ERPTemplateRegistry (validate against KiotViet specs)
     ↓
@@ -103,7 +105,7 @@ Master data is extracted from transaction data and enriched with external lookup
 See `docs/architecture-decisions.md` for detailed rationales behind:
 - **Staging pattern** (safe re-runs)
 - **Configuration-driven pipeline** (vs hardcoded)
-- **Content-hash caching** (vs mtime)
+- **mtime-Based Change Detection** (vs content-hash)
 - **Raw-source grouping** (vs processing phase grouping)
 
 ## Legacy Files Reference

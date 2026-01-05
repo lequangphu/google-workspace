@@ -4,11 +4,11 @@ from unittest.mock import MagicMock, patch
 
 
 from src.pipeline.orchestrator import (
+    execute_pipeline,
     get_directory_mtime,
     get_file_mtime,
     list_csv_files,
     run_command,
-    should_run_generate_product_info,
     should_run_transform,
     should_run_upload,
 )
@@ -157,27 +157,6 @@ class TestOrchestrationLogic:
         ):
             assert should_run_transform() is True
 
-    def test_should_run_generate_product_info_failed_transform(self):
-        """Test should_run_generate_product_info with failed transform."""
-        assert should_run_generate_product_info(False) is False
-
-    def test_should_run_generate_product_info_no_files(self, tmp_path):
-        """Test should_run_generate_product_info with no staging files."""
-        staging_dir = tmp_path / "staging"
-        staging_dir.mkdir()
-
-        with patch("src.pipeline.orchestrator.DATA_STAGING_DIR", staging_dir):
-            assert should_run_generate_product_info(True) is False
-
-    def test_should_run_generate_product_info_success(self, tmp_path):
-        """Test should_run_generate_product_info with staging files."""
-        staging_dir = tmp_path / "staging"
-        staging_dir.mkdir()
-        (staging_dir / "test.csv").write_text("data")
-
-        with patch("src.pipeline.orchestrator.DATA_STAGING_DIR", staging_dir):
-            assert should_run_generate_product_info(True) is True
-
     def test_should_run_upload_failed_transform(self):
         """Test should_run_upload with failed transform."""
         assert should_run_upload(False) is False
@@ -258,17 +237,17 @@ class TestMockFunctions:
 class TestMainEntry:
     """Test main entry point."""
 
-    @patch("src.pipeline.orchestrator.run_full_pipeline")
+    @patch("src.pipeline.orchestrator.execute_pipeline")
     @patch("sys.exit")
-    def test_main_default_full_pipeline(self, mock_exit, mock_run_full):
+    def test_main_default_full_pipeline(self, mock_exit, mock_execute):
         """Test main runs full pipeline by default."""
         from src.pipeline.orchestrator import main
 
-        mock_run_full.return_value = True
+        mock_execute.return_value = True
 
         with patch("sys.argv", ["orchestrator.py"]):
             main()
-        mock_run_full.assert_called_once()
+        mock_execute.assert_called_once()
         mock_exit.assert_called_once_with(0)
 
     @patch("src.pipeline.orchestrator.step_ingest")

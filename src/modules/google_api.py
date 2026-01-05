@@ -338,6 +338,80 @@ def read_sheet_data(sheets_service, spreadsheet_id, sheet_name):
     return []
 
 
+def write_sheet_data(
+    sheets_service, spreadsheet_id: str, sheet_name: str, values: list
+) -> bool:
+    """Write data to a sheet tab with retry logic.
+
+    Creates the sheet if it doesn't exist. Clears existing content before writing.
+
+    Args:
+        sheets_service: Google Sheets API service object.
+        spreadsheet_id: ID of the spreadsheet.
+        sheet_name: Name of the sheet tab.
+        values: List of rows (lists of values) to write.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    max_retries = 3
+
+    for attempt in range(max_retries):
+        try:
+            spreadsheet = (
+                sheets_service.spreadsheets()
+                .get(
+                    spreadsheetId=spreadsheet_id,
+                    fields="sheets(properties(sheetId,title))",
+                )
+                .execute()
+            )
+
+            existing_sheet_id = None
+            for sheet in spreadsheet.get("sheets", []):
+                if sheet["properties"]["title"] == sheet_name:
+                    existing_sheet_id = sheet["properties"]["sheetId"]
+                    break
+
+            if existing_sheet_id is not None:
+                sheets_service.spreadsheets().values().clear(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"'{sheet_name}'!A:Z",
+                ).execute()
+            else:
+                request = {"addSheet": {"properties": {"title": sheet_name}}}
+                sheets_service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id, body={"requests": [request]}
+                ).execute()
+
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{sheet_name}'!A1",
+                valueInputOption="USER_ENTERED",
+                body={"values": values},
+            ).execute()
+
+            logger.info(f"Successfully wrote {len(values)} rows to '{sheet_name}'")
+            return True
+
+        except HttpError as e:
+            if e.resp.status == 429:
+                wait_time = 2**attempt
+                logger.warning(
+                    f"Rate limited writing {sheet_name}, retrying in {wait_time}s "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(
+                    f"Failed to write sheet {sheet_name} to {spreadsheet_id}: {e}"
+                )
+                return False
+
+    logger.error(f"Failed to write sheet {sheet_name} after {max_retries} retries")
+    return False
+
+
 def export_tab_to_csv(
     sheets_service, spreadsheet_id: str, sheet_name: str, csv_path: Path
 ) -> bool:
