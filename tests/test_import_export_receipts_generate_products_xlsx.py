@@ -9,10 +9,12 @@ import pandas as pd
 import pytest
 
 from src.modules.import_export_receipts.generate_products_xlsx import (
+    build_template_dataframe,
     calculate_max_selling_price,
     find_latest_file,
     get_latest_inventory,
     get_sort_key,
+    get_product_names_from_nhap,
     standardize_brand_names,
 )
 
@@ -223,3 +225,171 @@ B,2025-01-31,40,120.0
 
         result = generate_products(staging_dir=Path("/nonexistent"))
         assert result is None
+
+
+class TestGetProductNamesFromNhap:
+    """Test get_product_names_from_nhap function."""
+
+    def test_get_shortest_name_per_product(self):
+        """Test selecting shortest name per product code."""
+        nhap_df = pd.DataFrame(
+            {
+                "Mã hàng": ["A", "A", "B", "B", "C"],
+                "Tên hàng": [
+                    "Long Name Product A Version 1",
+                    "Short A",
+                    "Medium Name B",
+                    "B Short",
+                    "Product C",
+                ],
+            }
+        )
+
+        result = get_product_names_from_nhap(nhap_df)
+
+        assert len(result) == 3
+        product_a = result[result["Mã hàng"] == "A"]
+        product_b = result[result["Mã hàng"] == "B"]
+        product_c = result[result["Mã hàng"] == "C"]
+
+        assert product_a["Tên hàng"].iloc[0] == "Short A"
+        assert product_b["Tên hàng"].iloc[0] == "B Short"
+        assert product_c["Tên hàng"].iloc[0] == "Product C"
+
+    def test_handles_null_and_empty_names(self):
+        """Test handling of null and empty product names."""
+        nhap_df = pd.DataFrame(
+            {
+                "Mã hàng": ["A", "A", "B", "B"],
+                "Tên hàng": ["Valid Name A", "", "Valid Name B", pd.NA],
+            }
+        )
+
+        result = get_product_names_from_nhap(nhap_df)
+
+        assert len(result) == 2
+        assert result[result["Mã hàng"] == "A"]["Tên hàng"].iloc[0] == "Valid Name A"
+        assert result[result["Mã hàng"] == "B"]["Tên hàng"].iloc[0] == "Valid Name B"
+
+    def test_empty_dataframe(self):
+        """Test with empty DataFrame."""
+        result = get_product_names_from_nhap(pd.DataFrame())
+        assert result.empty
+        assert list(result.columns) == ["Mã hàng", "Tên hàng"]
+
+    def test_missing_ten_hang_column(self):
+        """Test when Tên hàng column is missing."""
+        nhap_df = pd.DataFrame({"Mã hàng": ["A", "B"]})
+        result = get_product_names_from_nhap(nhap_df)
+        assert result.empty
+        assert list(result.columns) == ["Mã hàng", "Tên hàng"]
+
+
+class TestBuildTemplateDataframeWithFallback:
+    """Test build_template_dataframe with fallback_names parameter."""
+
+    def test_fallback_applied_for_empty_names(self):
+        """Test that fallback names are used when enrichment has empty Tên hàng."""
+        product_codes = pd.DataFrame(
+            {
+                "Mã hàng": ["A", "B", "C"],
+                "Mã hàng mới": ["SPCA", "SPCB", "SPCC"],
+            }
+        )
+
+        inventory = pd.DataFrame(
+            {
+                "Mã hàng": ["A", "B", "C"],
+                "Số lượng cuối kỳ": [100, 50, 75],
+                "Đơn giá cuối kỳ": [10.0, 20.0, 15.0],
+            }
+        )
+
+        prices = pd.DataFrame(
+            {"Mã hàng": ["A", "B", "C"], "Giá bán": [15.0, 25.0, 20.0]}
+        )
+
+        enrichment = pd.DataFrame(
+            {
+                "Mã hàng": ["A", "B", "C"],
+                "Nhóm hàng(3 Cấp)": ["Cat A", "Cat B", "Cat C"],
+                "Thương hiệu": ["Brand A", "Brand B", "Brand C"],
+                "Tên hàng": ["", pd.NA, "Product C"],
+            }
+        )
+
+        fallback_names = pd.DataFrame(
+            {
+                "Mã hàng": ["A", "B", "C"],
+                "Tên hàng": ["Fallback A", "Fallback B", "Unused C"],
+            }
+        )
+
+        result = build_template_dataframe(
+            product_codes, inventory, prices, enrichment, fallback_names
+        )
+
+        assert "Tên hàng" in result.columns
+        assert result[result["Mã hàng"] == "SPCA"]["Tên hàng"].iloc[0] == "Fallback A"
+        assert result[result["Mã hàng"] == "SPCB"]["Tên hàng"].iloc[0] == "Fallback B"
+        assert result[result["Mã hàng"] == "SPCC"]["Tên hàng"].iloc[0] == "Product C"
+
+    def test_no_fallback_when_enrichment_has_names(self):
+        """Test that enrichment names are preserved when not empty."""
+        product_codes = pd.DataFrame({"Mã hàng": ["A"], "Mã hàng mới": ["SPCA"]})
+
+        inventory = pd.DataFrame(
+            {
+                "Mã hàng": ["A"],
+                "Số lượng cuối kỳ": [100],
+                "Đơn giá cuối kỳ": [10.0],
+            }
+        )
+
+        prices = pd.DataFrame({"Mã hàng": ["A"], "Giá bán": [15.0]})
+
+        enrichment = pd.DataFrame(
+            {
+                "Mã hàng": ["A"],
+                "Nhóm hàng(3 Cấp)": ["Cat A"],
+                "Thương hiệu": ["Brand A"],
+                "Tên hàng": ["Enrichment Name"],
+            }
+        )
+
+        fallback_names = pd.DataFrame({"Mã hàng": ["A"], "Tên hàng": ["Fallback Name"]})
+
+        result = build_template_dataframe(
+            product_codes, inventory, prices, enrichment, fallback_names
+        )
+
+        assert "Tên hàng" in result.columns
+        assert result["Tên hàng"].iloc[0] == "Enrichment Name"
+
+    def test_no_fallback_parameter(self):
+        """Test that function works without fallback_names parameter."""
+        product_codes = pd.DataFrame({"Mã hàng": ["A"], "Mã hàng mới": ["SPCA"]})
+
+        inventory = pd.DataFrame(
+            {
+                "Mã hàng": ["A"],
+                "Số lượng cuối kỳ": [100],
+                "Đơn giá cuối kỳ": [10.0],
+            }
+        )
+
+        prices = pd.DataFrame({"Mã hàng": ["A"], "Giá bán": [15.0]})
+
+        enrichment = pd.DataFrame(
+            {
+                "Mã hàng": ["A"],
+                "Nhóm hàng(3 Cấp)": ["Cat A"],
+                "Thương hiệu": ["Brand A"],
+                "Tên hàng": ["Enrichment Name"],
+            }
+        )
+
+        result = build_template_dataframe(product_codes, inventory, prices, enrichment)
+
+        assert "Tên hàng" in result.columns
+        assert result["Tên hàng"].iloc[0] == "Enrichment Name"

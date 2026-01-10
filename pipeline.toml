@@ -16,13 +16,9 @@ steps = ["ingest", "transform", "validate", "export"]
 type = "folder"
 description = "Import/Export Receipts: Year/month files with CT.NHAP, CT.XUAT, XNT tabs"
 folder_ids = [
-    "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj",  # Folder 7 (most recent/active)
-    "1Q2-P4aeJfKEVuT69akFHcgrxMsB2mrrU",  # Folder 5
-    "1SYlk8Uztzd8asEZp6SK1yfF-EL0-t_sc",  # Folder 4
-    "1p4XXU0nOsJc2Rr2_vJa3YluqmjPtzWRo",  # Folder 3
-    "1ZJY7aJ-eRdoqYA1NE9ByfHeiYnxq1cFZ",  # Folder 2
-    "1QIP6LCr6lANzzRnAZPmVg7wIWdUmhs6q",  # Folder 6
-    "1RbkY2dd1IaqSHhnivjh6iejKv9mpkSJ_",  # Folder 1
+    "1RbkY2dd1IaqSHhnivjh6iejKv9mpkSJ_",  # Folder 1 (oldest)
+    "1QIP6LCr6lANzzRnAZPmVg7wIWdUmhs6q",  # Folder 2
+    "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj",  # Folder 3 (most recent/active)
 ]
 tabs = ["CT.NHAP", "CT.XUAT", "XNT"]
 output_subdir = "import_export"
@@ -90,3 +86,6 @@ receipt_date = "2020-03-31"
 receipt_code_prefix = "PN-OB"
 supplier_name = "Kho đầu kỳ"
 quantity_price_tolerance_pct = 5.0
+
+[upload]
+google_sheets_id_reports = "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k"

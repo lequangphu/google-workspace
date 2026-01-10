@@ -27,6 +27,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from src.modules.import_export_receipts.product_disambiguation import (
+    disambiguate_product_codes,
+    log_disambiguation_summary,
+)
+
+# ============================================================================
+# LOGGING SETUP
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -687,10 +694,21 @@ def transform_sale_receipts(
         final_df = final_df.sort_values(
             by=["Ngày_dt", "Mã chứng từ"], na_position="last"
         )
-        final_df = final_df.drop(columns=["Ngày_dt"])
+        final_df = final_df.drop(columns=["Ngày_dt"], errors="ignore")
 
-    # Save output
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Step 7: Disambiguate product codes
+    logger.info("=" * 70)
+    logger.info("Step 7: Disambiguating product codes")
+    logger.info("=" * 70)
+    final_df, disambig_stats = disambiguate_product_codes(
+        final_df,
+        code_col="Mã hàng",
+        name_col="Tên hàng",
+        date_col="Ngày",
+    )
+    log_disambiguation_summary(disambig_stats)
+
+    # Step 8: Save output
     output_filepath = output_dir / output_filename
     final_df.to_csv(output_filepath, index=False, encoding="utf-8")
     logger.info(f"Saved to: {output_filepath}")
@@ -718,7 +736,3 @@ def transform_sale_receipts(
     create_reconciliation_checkpoint(input_dir, output_filepath, "clean_receipts_sale")
 
     return output_filepath
-
-
-if __name__ == "__main__":
-    transform_sale_receipts()

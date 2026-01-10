@@ -55,22 +55,23 @@ Workflow:
 
 import argparse
 import logging
-import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
+from src.modules.google_api import get_sheet_id_by_name, API_CALL_DELAY
+
+from src.utils import get_workspace_root
+
 
 # === CONFIGURATION ===
 
-WORKSPACE_ROOT = Path(__file__).parent.parent.parent
+WORKSPACE_ROOT = get_workspace_root()
+
 DATA_RAW_DIR = WORKSPACE_ROOT / "data" / "00-raw"
 DATA_STAGING_DIR = WORKSPACE_ROOT / "data" / "01-staging"
 DATA_VALIDATED_DIR = WORKSPACE_ROOT / "data" / "02-validated"
@@ -82,6 +83,13 @@ DATA_PRODUCT_DIR = WORKSPACE_ROOT / "data" / "reports"
 
 # Migrated module paths
 MODULE_INGEST = WORKSPACE_ROOT / "src" / "modules" / "ingest.py"
+
+# Legacy script paths (fallback when migrated versions not available)
+SCRIPT_INGEST = WORKSPACE_ROOT / "legacy" / "ingest.py"
+SCRIPT_CLEAN_NHAP = WORKSPACE_ROOT / "legacy" / "clean_chung_tu_nhap.py"
+SCRIPT_CLEAN_XUAT = WORKSPACE_ROOT / "legacy" / "clean_chung_tu_xuat.py"
+SCRIPT_CLEAN_XNT = WORKSPACE_ROOT / "legacy" / "clean_xuat_nhap_ton.py"
+SCRIPT_GENERATE_PRODUCT_INFO = WORKSPACE_ROOT / "legacy" / "generate_product_info.py"
 
 # Transform module registry: maps source to transformation scripts
 TRANSFORM_MODULES = {
@@ -95,52 +103,69 @@ TRANSFORM_MODULES = {
         "reconcile_inventory.py",
     ],
     "receivable": [
-        "generate_customers_xlsx_v2.py",
+        "generate_customers_xlsx.py",
     ],
     "payable": [
         "generate_suppliers_xlsx.py",
     ],
-    "cashflow": [],
 }
 
-# Module aliases: short nicknames for modules
+# Module alias shortcuts for CLI
 MODULE_ALIASES = {
     "ier": "import_export_receipts",
     "rec": "receivable",
     "pay": "payable",
-    "cash": "cashflow",
 }
 
-# Module subdirectory mapping in staging/validated dirs
-MODULE_SUBDIRS = {
-    "import_export_receipts": "import_export",
-    "receivable": "receivable",
-    "payable": "payable",
-    "cashflow": "cashflow",
-}
 
-# Legacy script paths (for fallback)
-SCRIPT_INGEST = WORKSPACE_ROOT / "ingest.py"
-SCRIPT_CLEAN_NHAP = WORKSPACE_ROOT / "clean_chung_tu_nhap.py"
-SCRIPT_CLEAN_XUAT = WORKSPACE_ROOT / "clean_chung_tu_xuat.py"
-SCRIPT_CLEAN_XNT = WORKSPACE_ROOT / "clean_xuat_nhap_ton.py"
-SCRIPT_GENERATE_PRODUCT_INFO = WORKSPACE_ROOT / "generate_product_info.py"
+def import_export_receipts_transform() -> bool:
+    """Transform import_export_receipts data."""
+    from src.modules.import_export_receipts.generate_products_xlsx import process
 
-GOOGLE_DRIVE_FOLDER_ID = "1J-3aAf8Hco3iL9-oFnfoABgjiLNdjI7H"
-GOOGLE_SHEETS_ID_CLEANED = "1KYz8S4WSL5vG2TIYsZKKIwNulKLvMc82iBMso_u49dk"
-GOOGLE_SHEETS_ID_REPORTS = "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k"
-SCOPES = [
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/spreadsheets",
-]
+    logger.info("Running generate_products_xlsx.process()...")
+    try:
+        result = process(write_to_sheets=False)
+        if result is None:
+            logger.error("generate_products_xlsx failed")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"generate_products_xlsx raised exception: {e}")
+        return False
 
-# === LOGGING ===
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)-8s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
+def receivable_transform() -> bool:
+    """Transform receivable data."""
+    from src.modules.receivable.generate_customers_xlsx import process
+
+    logger.info("Running generate_customers_xlsx.process()...")
+    try:
+        result = process(write_to_sheets=False)
+        if result is None:
+            logger.error("generate_customers_xlsx failed")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"generate_customers_xlsx raised exception: {e}")
+        return False
+
+
+def payable_transform() -> bool:
+    """Transform payable data."""
+    from src.modules.payable.generate_suppliers_xlsx import process
+
+    logger.info("Running generate_suppliers_xlsx.process()...")
+    try:
+        result = process(write_to_sheets=False)
+        if result is None:
+            logger.error("generate_suppliers_xlsx failed")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"generate_suppliers_xlsx raised exception: {e}")
+        return False
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -207,24 +232,6 @@ def run_command(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
 # === GOOGLE DRIVE FUNCTIONS ===
 
 
-def authenticate_google_drive():
-    """Authenticate with Google Drive API."""
-    creds = None
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open("token.json", "w") as token:
-            token.write(creds.to_json())
-
-    return creds
-
-
 def find_file_in_drive(
     drive_service, filename: str, parent_folder_id: str
 ) -> Optional[str]:
@@ -259,23 +266,9 @@ def add_csv_as_sheet_tab(
         # Sheet name: remove .csv extension
         sheet_name = csv_filepath.stem
 
-        # Get existing sheet metadata
-        spreadsheet = (
-            sheets_service.spreadsheets()
-            .get(
-                spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title))"
-            )
-            .execute()
+        existing_sheet_id = get_sheet_id_by_name(
+            sheets_service, spreadsheet_id, sheet_name
         )
-
-        sheet_properties = spreadsheet.get("sheets", [])
-        existing_sheet_id = None
-
-        # Check if sheet already exists
-        for sheet in sheet_properties:
-            if sheet["properties"]["title"] == sheet_name:
-                existing_sheet_id = sheet["properties"]["sheetId"]
-                break
 
         # If sheet exists and we're replacing, clear it first
         if existing_sheet_id is not None and replace:
@@ -284,29 +277,13 @@ def add_csv_as_sheet_tab(
                 spreadsheetId=spreadsheet_id,
                 range=f"'{sheet_name}'!A:Z",
             ).execute()
+            time.sleep(API_CALL_DELAY)
         elif existing_sheet_id is not None:
             logger.info(f"Sheet {sheet_name} already exists, skipping")
             return True
         else:
             # Create new sheet
             logger.info(f"Creating new sheet: {sheet_name}")
-            request = {
-                "addSheet": {
-                    "properties": {
-                        "title": sheet_name,
-                    }
-                }
-            }
-            response = (
-                sheets_service.spreadsheets()
-                .batchUpdate(
-                    spreadsheetId=spreadsheet_id,
-                    body={"requests": [request]},
-                )
-                .execute()
-            )
-            response["replies"][0]["addSheet"]["properties"]["sheetId"]
-
         # Read CSV and prepare data
         df = pd.read_csv(csv_filepath)
 
@@ -322,6 +299,10 @@ def add_csv_as_sheet_tab(
             valueInputOption="USER_ENTERED",
             body={"values": values},
         ).execute()
+        time.sleep(API_CALL_DELAY)
+
+        logger.info(f"Successfully added/updated sheet: {sheet_name}")  # noqa: F841
+        time.sleep(API_CALL_DELAY)
 
         logger.info(f"Successfully added/updated sheet: {sheet_name}")
         return True
@@ -576,7 +557,7 @@ def step_export_erp(modules_filter: Optional[List[str]] = None) -> bool:
     # Export receivable (Customers.xlsx) - if module exists
     if not modules_filter or "receivable" in modules_filter:
         try:
-            from src.modules.receivable.generate_customers_xlsx_v2 import (
+            from src.modules.receivable.generate_customers_xlsx import (
                 process as generate_customers,
             )
 
@@ -603,104 +584,12 @@ def step_export_erp(modules_filter: Optional[List[str]] = None) -> bool:
 
 
 def step_upload(modules_filter: Optional[List[str]] = None) -> bool:
-    """Step 3: Upload transformed and report files to respective target sheets.
-
-    Args:
-        modules_filter: List of modules to upload. If None, upload all available.
-    """
     logger.info("=" * 70)
     logger.info("STEP 3: UPLOAD")
-    if modules_filter:
-        logger.info(f"Modules: {', '.join(modules_filter)}")
+    logger.info("Upload disabled per ADR-10 - XLSX files in data/03-erp-export/")
+    logger.info("Please upload XLSX files manually to ERP")
     logger.info("=" * 70)
-
-    try:
-        creds = authenticate_google_drive()
-        sheets_service = build("sheets", "v4", credentials=creds)
-    except Exception as e:
-        logger.error(f"Failed to authenticate with Google Sheets: {e}")
-        return False
-
-    # Check both legacy and new data directories
-    cleaned_files = list_csv_files(DATA_FINAL_DIR) if DATA_FINAL_DIR.exists() else []
-    staging_files = (
-        list_csv_files(DATA_STAGING_DIR) if DATA_STAGING_DIR.exists() else []
-    )
-    report_files = list_csv_files(DATA_PRODUCT_DIR) if DATA_PRODUCT_DIR.exists() else []
-
-    # Filter files by module if filter specified
-    if modules_filter:
-        # Filter staging files by subdirectory
-        if staging_files:
-            staging_files = [
-                f
-                for f in staging_files
-                if any(
-                    str(MODULE_SUBDIRS.get(mod)) in str(f.parent)
-                    for mod in modules_filter
-                    if mod in MODULE_SUBDIRS
-                )
-            ]
-
-        # Filter cleaned files (legacy) by matching module prefixes
-        if cleaned_files:
-            cleaned_files = [
-                f
-                for f in cleaned_files
-                if any(
-                    f.name.startswith(prefix)
-                    for prefix in ["CT.NHAP", "CT.XUAT", "XNT", "receivable", "payable"]
-                )
-            ]
-
-        # Filter report files by module
-        if report_files:
-            report_files = [
-                f
-                for f in report_files
-                if any(
-                    f.name.lower().startswith(mod.lower().replace("_", ""))
-                    for mod in modules_filter
-                )
-            ]
-
-    all_succeeded = True
-
-    # Prefer staging files (new) over legacy cleaned files
-    files_to_upload = staging_files or cleaned_files
-
-    if files_to_upload:
-        logger.info(
-            f"Uploading {len(files_to_upload)} transformed files to cleaned sheet"
-        )
-        logger.info(
-            f"Target spreadsheet: https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID_CLEANED}"
-        )
-        for filepath in files_to_upload:
-            if not add_csv_as_sheet_tab(
-                sheets_service, filepath, GOOGLE_SHEETS_ID_CLEANED, replace=True
-            ):
-                all_succeeded = False
-
-    # Upload report files to GOOGLE_SHEETS_ID_REPORTS
-    if report_files:
-        logger.info(f"Uploading {len(report_files)} report files to reports sheet")
-        logger.info(
-            f"Target spreadsheet: https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID_REPORTS}"
-        )
-        for filepath in report_files:
-            if not add_csv_as_sheet_tab(
-                sheets_service, filepath, GOOGLE_SHEETS_ID_REPORTS, replace=True
-            ):
-                all_succeeded = False
-
-    if not files_to_upload and not report_files:
-        logger.warning("No transformed or report files found to upload")
-        return True
-
-    if all_succeeded:
-        logger.info("All files uploaded successfully as sheet tabs")
-    return all_succeeded
+    return True
 
 
 # === PIPELINE ORCHESTRATION ===
@@ -735,20 +624,8 @@ def should_run_transform() -> bool:
 
 def should_run_upload(transform_succeeded: bool) -> bool:
     """Determine if upload step should run."""
-    if not transform_succeeded:
-        logger.info("Transform step did not succeed, skipping upload")
-        return False
-
-    staging_files = list_csv_files(DATA_STAGING_DIR)
-    final_files = list_csv_files(DATA_FINAL_DIR) if DATA_FINAL_DIR.exists() else []
-    files_to_upload = staging_files or final_files
-
-    if not files_to_upload:
-        logger.info("No transformed files to upload")
-        return False
-
-    logger.info("Transformed files ready for upload")
-    return True
+    logger.info("Upload step is disabled")
+    return False
 
 
 def execute_pipeline(
@@ -811,6 +688,13 @@ def execute_pipeline(
 
 
 # === MAIN ===
+
+# Set up logging for the orchestrator
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()],
+)
 
 
 def main():

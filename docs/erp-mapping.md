@@ -18,7 +18,7 @@ Reference for all columns required in each KiotViet import template. Use for val
 |---|--------|------|--------|-------|
 | 1 | Loại hàng | Text | — | "Hàng hóa", "Dịch vụ" |
 | 2 | Nhóm hàng(3 Cấp) | Text | — | Hierarchy: "Loại > Nhóm > Chi tiết" |
-| 3 | Mã hàng | Text | — | **Primary Key**. Format: "HH000026" |
+| 3 | Mã hàng | Text | — | **Primary Key**. Format: "SPC" + original product code |
 | 4 | Mã vạch | Text | — | Barcode or product code |
 | 5 | Tên hàng | Text | — | Product name (Title Case) |
 | 6 | Thương hiệu | Text | — | Brand name |

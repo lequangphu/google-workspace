@@ -20,9 +20,8 @@ Output:
 """
 
 import logging
-import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import pandas as pd
 import toml
@@ -35,53 +34,15 @@ from src.modules.google_api import (
     read_sheet_data,
     write_sheet_data,
 )
+from src.utils.data_cleaning import (
+    generate_entity_codes,
+    merge_master_data,
+    parse_numeric,
+    split_phone_numbers,
+)
+from src.utils.staging_cache import StagingCache
 
 logger = logging.getLogger(__name__)
-
-
-def clean_phone_number(phone: str) -> str:
-    if not phone:
-        return ""
-    phone = str(phone).strip()
-    phone = re.sub(r"[.,;:]", "", phone)
-    phone = re.sub(r"\s+", "", phone)
-    return phone
-
-
-def split_phone_numbers(phone_str: str) -> List[str]:
-    if not phone_str or pd.isna(phone_str):
-        return []
-
-    phone_str = str(phone_str).strip()
-    if not phone_str or phone_str == "None":
-        return []
-
-    if "/" in phone_str or " - " in phone_str:
-        phones = re.split(r"\s*[/-]\s*", phone_str)
-    else:
-        phones = [phone_str]
-
-    cleaned = [clean_phone_number(p) for p in phones]
-    cleaned = [p for p in cleaned if p]
-
-    return cleaned
-
-
-def parse_numeric(value: str) -> str:
-    if not value or pd.isna(value):
-        return "0"
-
-    value = str(value).strip()
-
-    if value == "-" or value == "":
-        return "0"
-
-    value = value.replace(".", "").replace(" ", "")
-
-    if value.startswith("(") and value.endswith(")"):
-        value = "-" + value[1:-1]
-
-    return value
 
 
 DATA_STAGING_DIR = Path.cwd() / "data" / "01-staging"
@@ -291,7 +252,7 @@ def load_purchase_transactions() -> pd.DataFrame:
     all_data = []
     for f in receipt_files:
         try:
-            df = pd.read_csv(f, encoding="utf-8")
+            df = StagingCache.get_dataframe(f)
             all_data.append(df)
             logger.info(f"  Loaded {len(df)} rows from {f.name}")
         except Exception as e:
@@ -341,80 +302,24 @@ def merge_all_data(
     debts_df: pd.DataFrame,
     transactions_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    logger.info("Merging all data sources...")
-
-    all_suppliers = set()
-
-    if not suppliers_df.empty and "Tên nhà cung cấp" in suppliers_df.columns:
-        all_suppliers |= set(suppliers_df["Tên nhà cung cấp"].dropna().unique())
-
-    if not debts_df.empty and "Tên nhà cung cấp" in debts_df.columns:
-        all_suppliers |= set(debts_df["Tên nhà cung cấp"].dropna().unique())
-
-    if not transactions_df.empty and "Tên nhà cung cấp" in transactions_df.columns:
-        all_suppliers |= set(transactions_df["Tên nhà cung cấp"].dropna().unique())
-
-    all_suppliers = {c for c in all_suppliers if c and str(c).strip()}
-
-    if not all_suppliers:
-        logger.info("No suppliers found in any source")
-        return pd.DataFrame()
-
-    logger.info(f"Total unique suppliers: {len(all_suppliers)}")
-
-    result = pd.DataFrame({"Tên nhà cung cấp": sorted(list(all_suppliers))})
-
-    if not suppliers_df.empty and "Tên nhà cung cấp" in suppliers_df.columns:
-        suppliers_df = suppliers_df.copy()
-        suppliers_df["Tên nhà cung cấp"] = suppliers_df["Tên nhà cung cấp"].str.strip()
-        result = result.merge(suppliers_df, on="Tên nhà cung cấp", how="left")
-
-    if not debts_df.empty and "Tên nhà cung cấp" in debts_df.columns:
-        debts_df = debts_df.copy()
-        debts_df["Tên nhà cung cấp"] = debts_df["Tên nhà cung cấp"].str.strip()
-        result = result.merge(debts_df, on="Tên nhà cung cấp", how="left")
-
-    if not transactions_df.empty and "Tên nhà cung cấp" in transactions_df.columns:
-        transactions_df = transactions_df.copy()
-        transactions_df["Tên nhà cung cấp"] = transactions_df[
-            "Tên nhà cung cấp"
-        ].str.strip()
-        result = result.merge(transactions_df, on="Tên nhà cung cấp", how="left")
-
-    if "Nợ cần trả hiện tại" in result.columns:
-        result["Nợ cần trả hiện tại"] = pd.to_numeric(
-            result["Nợ cần trả hiện tại"], errors="coerce"
-        ).fillna(0)
-
-    result = result.fillna("")
-    return result
+    return merge_master_data(
+        master_df=suppliers_df,
+        debts_df=debts_df,
+        transactions_df=transactions_df,
+        name_column="Tên nhà cung cấp",
+        debt_column="Nợ cần trả hiện tại",
+    )
 
 
 def generate_supplier_codes(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-
-    df = df.copy()
-
-    if "first_date" in df.columns:
-        df["first_date"] = pd.to_datetime(df["first_date"], errors="coerce")
-    else:
-        df["first_date"] = pd.NaT
-
-    if "total_amount" not in df.columns:
-        df["total_amount"] = 0
-    df["total_amount"] = pd.to_numeric(df["total_amount"], errors="coerce").fillna(0)
-
-    df = df.sort_values(
-        by=["first_date", "total_amount", "Tên nhà cung cấp"],
-        ascending=[True, False, True],
-        na_position="last",
-    ).reset_index(drop=True)
-
-    df["Mã nhà cung cấp"] = df.index.map(lambda x: f"NCC{x + 1:06d}")
-
-    logger.info(f"Generated {len(df)} supplier codes")
-    return df
+    return generate_entity_codes(
+        df=df,
+        name_column="Tên nhà cung cấp",
+        code_column="Mã nhà cung cấp",
+        code_prefix="NCC",
+        date_column="first_date",
+        amount_column="total_amount",
+    )
 
 
 def map_to_kiotviet_template(df: pd.DataFrame) -> pd.DataFrame:

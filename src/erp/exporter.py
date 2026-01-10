@@ -17,6 +17,7 @@ from .templates import (
     PriceBookTemplate,
     ProductTemplate,
 )
+from ..utils.staging_cache import StagingCache
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ def _load_inventory_with_latest_month(inventory_path: Path) -> pd.DataFrame:
     """
     # First, try the provided path
     if inventory_path.exists():
-        df = pd.read_csv(inventory_path)
+        df = StagingCache.get_dataframe(inventory_path)
         logger.info(f"Loaded inventory CSV with {len(df)} rows")
 
         # Check if this is output from clean_inventory.py (has date column)
@@ -90,7 +91,7 @@ def _load_inventory_with_latest_month(inventory_path: Path) -> pd.DataFrame:
                         f"Loading clean_inventory staging file: {latest_xnt.name}"
                     )
 
-                    staging_df = pd.read_csv(latest_xnt)
+                    staging_df = StagingCache.get_dataframe(latest_xnt)
                     if "Ngày" in staging_df.columns:
                         # Convert Ngày to datetime
                         staging_df["Ngày"] = pd.to_datetime(
@@ -164,20 +165,20 @@ def export_products_xlsx(
 
     # Load all data
     logger.info(f"Loading product_info from {product_info_path}")
-    products = pd.read_csv(product_info_path)
+    products = StagingCache.get_dataframe(product_info_path)
 
     logger.info(f"Loading inventory from {inventory_path}")
     inventory_latest_qty = _load_inventory_with_latest_month(inventory_path)
 
     # Also load validated inventory summary for cost columns
     logger.info(f"Loading validated inventory summary from {inventory_path}")
-    inventory_summary = pd.read_csv(inventory_path)
+    inventory_summary = StagingCache.get_dataframe(inventory_path)
 
     logger.info(f"Loading price_sale from {price_sale_path}")
-    prices = pd.read_csv(price_sale_path)
+    prices = StagingCache.get_dataframe(price_sale_path)
 
     logger.info(f"Loading enrichment from {enrichment_path}")
-    enrichment = pd.read_csv(enrichment_path)
+    enrichment = StagingCache.get_dataframe(enrichment_path)
 
     # Merge latest quantity and unit cost from clean_inventory
     # If unit cost not available from clean_inventory, fall back to validated summary
@@ -439,7 +440,7 @@ def export_customers_xlsx(
 
     # Load customer data
     logger.info(f"Loading customer data from {customer_ids_path}")
-    customers = pd.read_csv(customer_ids_path)
+    customers = StagingCache.get_dataframe(customer_ids_path)
 
     # Build template DataFrame (5 required columns minimum)
     logger.info("Mapping to customer template...")
@@ -517,10 +518,10 @@ def export_pricebook_xlsx(
 
     # Load data
     logger.info(f"Loading product_info from {product_info_path}")
-    products = pd.read_csv(product_info_path)
+    products = StagingCache.get_dataframe(product_info_path)
 
     logger.info(f"Loading price_sale from {price_sale_path}")
-    prices = pd.read_csv(price_sale_path)
+    prices = StagingCache.get_dataframe(price_sale_path)
 
     # Merge
     logger.info("Merging data sources...")

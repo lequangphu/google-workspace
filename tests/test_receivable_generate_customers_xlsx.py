@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for receivable.generate_customers_xlsx_v2 module."""
+"""Tests for receivable.generate_customers_xlsx module."""
 
 import logging
 from pathlib import Path
@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 import pandas as pd
 import pytest
 
-from src.modules.receivable import generate_customers_xlsx_v2 as gc
+from src.modules.receivable import generate_customers_xlsx as gc
 
 logger = logging.getLogger(__name__)
 

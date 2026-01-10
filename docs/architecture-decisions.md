@@ -94,7 +94,7 @@ src/modules/
 │   ├── reconcile_inventory.py
 │   └── generate_products_xlsx.py
 ├── receivable/              # Raw source: TỔNG CÔNG NỢ + Thong tin KH
-│   └── generate_customers_xlsx_v2.py
+│   └── generate_customers_xlsx.py
 ├── payable/                 # Raw source: MÃ CTY + TỔNG HỢP
 │   └── generate_suppliers_xlsx.py
 └── cashflow/                # Raw source: Tiền gửi + Tien mat (future)

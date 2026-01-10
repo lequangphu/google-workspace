@@ -1,15 +1,9 @@
-"""Pipeline orchestration module."""
+# -*- coding: utf-8 -*-
+"""Data pipeline module.
 
-from src.pipeline.orchestrator import (
-    execute_pipeline,
-    step_ingest,
-    step_transform,
-    step_upload,
-)
+Provides DataLoader class with caching for all staging data reads.
+"""
 
-__all__ = [
-    "execute_pipeline",
-    "step_ingest",
-    "step_transform",
-    "step_upload",
-]
+from .data_loader import DataLoader
+
+__all__ = ["DataLoader"]

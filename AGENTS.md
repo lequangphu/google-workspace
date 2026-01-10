@@ -26,7 +26,7 @@ Python data pipeline ingesting business data from Google Sheets, transforming by
 | Run full pipeline | `src/pipeline/orchestrator.py` | CLI: `uv run src/pipeline/orchestrator.py [--step transform] [--period 2025_01]` |
 | Ingest from Drive | `src/modules/ingest.py` | Uses `src/modules/google_api.py` for auth & manifest caching |
 | Products/PriceBook | `src/modules/import_export_receipts/` | Complex FIFO costing, Google Sheets enrichment |
-| Customers | `src/modules/receivable/generate_customers_xlsx_v2.py` | Phone cleaning, debt aggregation |
+| Customers | `src/modules/receivable/generate_customers_xlsx.py` | Phone cleaning, debt aggregation |
 | Suppliers | `src/modules/payable/generate_suppliers_xlsx.py` | Phone cleaning, supplier master |
 | ERP templates | `src/erp/templates.py` | KiotViet 27-column template definitions |
 | XLSX export | `src/erp/exporter.py` | Validates before export (never write directly) |

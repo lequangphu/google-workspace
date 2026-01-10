@@ -1,18 +1,17 @@
 """Upload cleaned data to source Google Sheets for reconciliation.
 
 This script:
-1. Cleans empty rows and columns from cleaned data
-2. Splits merged cleaned data by period (Year, Month)
-3. Maps each period to its corresponding Google Sheet
-4. Replaces existing tabs (or creates at beginning if doesn't exist)
-5. Handles rate limiting with delays between API calls
-6. Uploads all periods (2020-2025) in one run
+1. Splits merged cleaned data by period (Year, Month)
+2. Maps each period to its corresponding Google Sheet
+3. Replaces existing tabs (or creates if doesn't exist)
+4. Handles rate limiting with delays between API calls
+5. Uploads all periods (2020-2025) in one run
 
 New Tab Names (replacing if exists):
 - "Chi tiết nhập"     ← Chi tiết nhập*.csv (purchase)
 - "Chi tiết xuất"     ← Chi tiết xuất*.csv (sale)
-- "Xuất nhập tồn"     ← xuat_nhap_ton*.csv (inventory)
-- "Báo cáo tài chính" ← bao_cao_tai_chinh.csv (financial report)
+- "Xuất nhập tồn"     ← Xuất nhập tồn*.csv (inventory)
+- "Chi tiết chi phí" ← Chi tiết chi phí*.csv (expense detail)
 
 Note: Summary files ("Tổng hợp nhập" and "Tổng hợp xuất") are generated but NOT uploaded
 to preserve only detail-level data in Google Sheets. Summary files remain in staging directory
@@ -28,10 +27,12 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from src.modules.google_api import (
+    API_CALL_DELAY,
     connect_to_drive,
     get_sheets_for_folder,
     load_manifest,
     save_manifest,
+    write_sheet_data,
 )
 import tomllib
 
@@ -48,10 +49,8 @@ CLEANED_FILE_TO_TAB = {
     "Chi tiết nhập": "Chi tiết nhập",
     "Chi tiết xuất": "Chi tiết xuất",
     "xuat_nhap_ton": "Xuất nhập tồn",
-    "bao_cao_tai_chinh": "Báo cáo tài chính",
+    "bao_cao_tai_chinh": "Chi tiết chi phí",
 }
-
-API_CALL_DELAY = 0.5
 
 # ============================================================================
 # LOGGING SETUP
@@ -60,40 +59,8 @@ API_CALL_DELAY = 0.5
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# DATA CLEANING FUNCTIONS
+# DATA PROCESSING FUNCTIONS
 # ============================================================================
-
-
-def clean_dataframe_for_upload(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
-    stats = {
-        "original_rows": len(df),
-        "original_cols": len(df.columns),
-        "empty_rows_removed": 0,
-        "empty_cols_removed": 0,
-    }
-
-    df_clean = df.copy()
-
-    rows_before = len(df_clean)
-    df_clean = df_clean.dropna(how="all")
-    df_clean = df_clean[~(df_clean.map(lambda x: x == "" or pd.isna(x))).all(axis=1)]
-    stats["empty_rows_removed"] = rows_before - len(df_clean)
-
-    cols_before = len(df_clean.columns)
-    df_clean = df_clean.dropna(axis=1, how="all")
-    df_clean = df_clean.loc[:, ~(df_clean == "").all()]
-    stats["empty_cols_removed"] = cols_before - len(df_clean.columns)
-
-    logger.info(
-        f"Cleaning: Removed {stats['empty_rows_removed']} empty rows, "
-        f"{stats['empty_cols_removed']} empty columns"
-    )
-    logger.info(
-        f"  Before: {stats['original_rows']} rows, {stats['original_cols']} cols"
-    )
-    logger.info(f"  After: {len(df_clean)} rows, {len(df_clean.columns)} cols")
-
-    return df_clean, stats
 
 
 def split_cleaned_data_by_period(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
@@ -112,9 +79,6 @@ def split_cleaned_data_by_period(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
 
         period_mask = (df["Năm"] == year) & (df["Tháng"] == month)
         period_df = df[period_mask].copy()
-
-        cols_to_keep = [col for col in period_df.columns if col not in ["Năm", "Tháng"]]
-        period_df = period_df[cols_to_keep]
 
         period_dfs[period_key] = period_df
         logger.info(f"Split period {period_key}: {len(period_df)} rows")
@@ -162,39 +126,20 @@ def load_cleaned_files(staging_dir: Path) -> Dict[str, Path]:
             cleaned_files[pattern_key] = latest_file
             logger.info(f"Found cleaned file: {latest_file.name}")
 
-    xnt_files = list(staging_dir.glob("xuat_nhap_ton*.csv"))
+    xnt_files = list(staging_dir.glob("Xuất nhập tồn*.csv"))
     xnt_files = [f for f in xnt_files if "adjustments" not in f.name.lower()]
     if xnt_files:
         xnt_path = sorted(xnt_files)[-1]
         cleaned_files["xuat_nhap_ton"] = xnt_path
         logger.info(f"Found XNT file: {xnt_path.name}")
 
-    financial_file = staging_dir / "bao_cao_tai_chinh.csv"
-    if financial_file.exists():
-        cleaned_files["bao_cao_tai_chinh"] = financial_file
-        logger.info("Found financial report: bao_cao_tai_chinh.csv")
+    financial_files = list(staging_dir.glob("Chi tiết chi phí*.csv"))
+    if financial_files:
+        financial_path = sorted(financial_files)[-1]
+        cleaned_files["bao_cao_tai_chinh"] = financial_path
+        logger.info(f"Found financial report: {financial_path.name}")
 
     return cleaned_files
-
-
-def move_sheet_to_beginning(sheets_service, spreadsheet_id: str, sheet_id: int) -> bool:
-    try:
-        request = {
-            "updateSheetProperties": {
-                "properties": {
-                    "sheetId": sheet_id,
-                    "index": 0,
-                }
-            }
-        }
-        sheets_service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id, body={"requests": [request]}
-        ).execute()
-        time.sleep(API_CALL_DELAY)
-        return True
-    except Exception as e:
-        logger.error(f"Failed to move sheet to beginning: {e}")
-        return False
 
 
 def upload_to_spreadsheet(
@@ -202,9 +147,20 @@ def upload_to_spreadsheet(
     spreadsheet_id: str,
     tab_name: str,
     df: pd.DataFrame,
-    replace: bool = True,
     dry_run: bool = False,
 ) -> bool:
+    """Upload DataFrame to Google Sheet using write_sheet_data wrapper.
+
+    Args:
+        sheets_service: Google Sheets API service object.
+        spreadsheet_id: ID of the spreadsheet.
+        tab_name: Name of the sheet tab.
+        df: pandas DataFrame to upload.
+        dry_run: If True, log without uploading.
+
+    Returns:
+        True if successful (or dry run), False otherwise.
+    """
     if dry_run:
         logger.info(
             f"[DRY RUN] Would upload to {tab_name} in spreadsheet {spreadsheet_id}"
@@ -212,79 +168,21 @@ def upload_to_spreadsheet(
         logger.info(f"[DRY RUN]   Rows: {len(df)}, Columns: {len(df.columns)}")
         return True
 
-    try:
-        spreadsheet = (
-            sheets_service.spreadsheets()
-            .get(
-                spreadsheetId=spreadsheet_id,
-                fields="sheets(properties(sheetId,title))",
-            )
-            .execute()
-        )
-        time.sleep(API_CALL_DELAY)
+    # Convert all values to strings, preserving empty values as empty strings
+    values = [df.columns.tolist()]
+    for _, row in df.iterrows():
+        row_values = ["" if pd.isna(v) else str(v) for v in row]
+        values.append(row_values)
 
-        existing_sheet_id = None
-        for sheet in spreadsheet.get("sheets", []):
-            if sheet["properties"]["title"] == tab_name:
-                existing_sheet_id = sheet["properties"]["sheetId"]
-                break
+    logger.info(f"Writing {len(df)} rows to '{tab_name}'...")
+    success = write_sheet_data(sheets_service, spreadsheet_id, tab_name, values)
 
-        if existing_sheet_id is not None:
-            logger.info(f"Clearing existing sheet: '{tab_name}'")
-            sheets_service.spreadsheets().values().clear(
-                spreadsheetId=spreadsheet_id,
-                range=f"'{tab_name}'!A:Z",
-            ).execute()
-            time.sleep(API_CALL_DELAY)
-        else:
-            logger.info(f"Creating new sheet at beginning: '{tab_name}'")
-            request = {
-                "addSheet": {
-                    "properties": {
-                        "title": tab_name,
-                        "index": 0,
-                    }
-                }
-            }
-            response = (
-                sheets_service.spreadsheets()
-                .batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": [request]})
-                .execute()
-            )
-            time.sleep(API_CALL_DELAY)
-
-            new_sheet_id = response["replies"][0]["addSheet"]["properties"]["sheetId"]
-            move_sheet_to_beginning(sheets_service, spreadsheet_id, new_sheet_id)
-
-        # Ensure Mã hàng is treated as text to preserve leading zeros
-        df_upload = df.copy()
-        if "Mã hàng" in df_upload.columns:
-            df_upload["Mã hàng"] = df_upload["Mã hàng"].astype(str)
-
-        # Convert all values to strings, preserving empty values as empty strings
-        values = [df_upload.columns.tolist()]
-        for _, row in df_upload.iterrows():
-            row_values = ["" if pd.isna(v) else str(v) for v in row]
-            values.append(row_values)
-
-        logger.info(f"Writing {len(df)} rows to '{tab_name}'...")
-        sheets_service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=f"'{tab_name}'!A1",
-            valueInputOption="USER_ENTERED",
-            body={"values": values},
-        ).execute()
-        time.sleep(API_CALL_DELAY)
-
+    if success:
         logger.info(f"Uploaded {len(df)} rows to '{tab_name}'")
-        return True
+    else:
+        logger.error(f"Failed to upload to '{tab_name}'")
 
-    except Exception as e:
-        logger.error(f"Failed to upload to '{tab_name}': {e}")
-        import traceback
-
-        logger.error(traceback.format_exc())
-        return False
+    return success
 
 
 # ============================================================================
@@ -364,12 +262,10 @@ def upload_all_periods(
                 logger.warning(f"No spreadsheet found for period {period}, skipping")
                 continue
 
-            df_clean, cleaning_stats = clean_dataframe_for_upload(period_df)
-
             if file_type == "xuat_nhap_ton":
                 tab_name = "Xuất nhập tồn"
             elif file_type == "bao_cao_tai_chinh":
-                tab_name = "Báo cáo tài chính"
+                tab_name = "Chi tiết chi phí"
             else:
                 tab_name = CLEANED_FILE_TO_TAB.get(file_type, filepath.stem)
 
@@ -378,14 +274,13 @@ def upload_all_periods(
             logger.info(f"Period: {period}")
             logger.info(f"Tab: '{tab_name}'")
             logger.info(f"Sheet ID: {spreadsheet_id}")
-            logger.info(f"Rows: {len(df_clean)}")
+            logger.info(f"Rows: {len(period_df)}")
 
             if upload_to_spreadsheet(
                 sheets_service,
                 spreadsheet_id,
                 tab_name,
-                df_clean,
-                replace=True,
+                period_df,
                 dry_run=dry_run,
             ):
                 total_uploads += 1

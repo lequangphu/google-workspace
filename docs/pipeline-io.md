@@ -133,7 +133,7 @@ data/02-validated/
 ```
 
 **Key Columns Mapping:**
-- `Mã hàng mới` — Generated sequential code (HH000001, HH000002...)
+- `Mã hàng mới` — Generated code with SPC prefix (SPC + original product code)
 - `Mã hàng` — Original product code from CT.NHAP
 - `Giá xuất cuối` — Max selling price (used as "Giá bán" in template)
 - `Giá vốn FIFO` — FIFO-weighted unit cost (used as "Giá vốn" in template)

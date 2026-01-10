@@ -14,6 +14,7 @@ Pipeline stage: data/01-staging/ → Google Spreadsheet
 """
 
 import logging
+import toml
 from pathlib import Path
 from typing import Optional
 
@@ -22,9 +23,15 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from src.erp.templates import ProductTemplate
-from src.modules.import_export_receipts.extract_attributes import extract_attributes
+from src.utils.product_attributes import extract_attributes
+from src.utils.staging_cache import StagingCache
 
 logger = logging.getLogger(__name__)
+
+WORKSPACE_ROOT = Path(__file__).parent.parent.parent
+PIPELINE_CONFIG = WORKSPACE_ROOT / "pipeline.toml"
+
+_CONFIG = toml.load(PIPELINE_CONFIG) if PIPELINE_CONFIG.exists() else {}
 
 CONFIG = {
     "staging_dir": Path.cwd() / "data" / "01-staging" / "import_export",
@@ -32,9 +39,13 @@ CONFIG = {
     "nhap_pattern": "*Chi tiết nhập*.csv",
     "xuat_pattern": "*Chi tiết xuất*.csv",
     "xnt_pattern": "Xuất nhập tồn *.csv",
-    "product_lookup_spreadsheet_id": "16bGN2gjWspCqlFD4xB--7WtkYtTpDaWzRQx9sV97ed8",
+    "product_lookup_spreadsheet_id": _CONFIG.get("enrichment", {}).get(
+        "product_lookup_spreadsheet_id", "16bGN2gjWspCqlFD4xB--7WtkYtTpDaWzRQx9sV97ed8"
+    ),
     "product_lookup_sheet_name": "Nhóm hàng, thương hiệu",
-    "reports_spreadsheet_id": "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k",
+    "reports_spreadsheet_id": _CONFIG.get("upload", {}).get(
+        "google_sheets_id_reports", "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k"
+    ),
     "products_sheet_name": "products_to_import",
 }
 
@@ -62,7 +73,7 @@ def get_latest_inventory(xnt_dir: Path) -> pd.DataFrame:
 
     all_data = []
     for f in xnt_files:
-        df = pd.read_csv(f)
+        df = StagingCache.get_dataframe(f)
         if "Ngày" in df.columns:
             all_data.append(df)
 
@@ -153,6 +164,49 @@ def standardize_brand_names(enrichment_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def get_product_names_from_nhap(nhap_df: pd.DataFrame) -> pd.DataFrame:
+    """Extract unique product names from nhap data, choosing shortest name per product.
+
+    This is used as fallback when Google Sheets Tên hàng is null/empty.
+
+    Args:
+        nhap_df: DataFrame with 'Mã hàng' and 'Tên hàng' columns
+
+    Returns:
+        DataFrame with 'Mã hàng' and 'Tên hàng' columns (shortest name per product)
+    """
+    if nhap_df.empty or "Tên hàng" not in nhap_df.columns:
+        return pd.DataFrame(columns=["Mã hàng", "Tên hàng"])
+
+    nhap_df = nhap_df.copy()
+
+    nhap_df["Tên hàng"] = (
+        nhap_df["Tên hàng"]
+        .astype(str)
+        .str.strip()
+        .replace(["nan", "None", "<NA>", ""], pd.NA)
+    )
+
+    nhap_df = nhap_df.dropna(subset=["Tên hàng"])
+
+    if nhap_df.empty:
+        return pd.DataFrame(columns=["Mã hàng", "Tên hàng"])
+
+    def get_shortest_name(group):
+        names = group["Tên hàng"].dropna().astype(str)
+        if names.empty:
+            return ""
+        return min(names, key=len)
+
+    product_names = nhap_df.groupby("Mã hàng", as_index=False, group_keys=False).apply(
+        get_shortest_name, include_groups=False
+    )
+    product_names.columns = ["Mã hàng", "Tên hàng"]
+
+    logger.info(f"Extracted {len(product_names)} product names from nhap data")
+    return product_names
+
+
 def get_sort_key(ma_hang: str, nhap_df: pd.DataFrame) -> tuple:
     """Get sort key based on first occurrence date in nhập data."""
     product_data = nhap_df[nhap_df["Mã hàng"] == ma_hang]
@@ -193,8 +247,17 @@ def build_template_dataframe(
     inventory: pd.DataFrame,
     prices: pd.DataFrame,
     enrichment: pd.DataFrame,
+    fallback_names: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """Build 27-column KiotViet template DataFrame."""
+    """Build 27-column KiotViet template DataFrame.
+
+    Args:
+        product_codes: DataFrame with Mã hàng and Mã hàng mới
+        inventory: DataFrame with Số lượng cuối kỳ, Đơn giá cuối kỳ
+        prices: DataFrame with Giá bán
+        enrichment: DataFrame with Nhóm hàng(3 Cấp), Thương hiệu, Tên hàng, Loại máy xe, Tên xe, Thuộc tính, Mô tả from Google Sheets
+        fallback_names: Optional DataFrame with Mã hàng, Tên hàng from nhap data (shortest name)
+    """
     df = product_codes.copy()
 
     df = df.merge(inventory, on="Mã hàng", how="left")
@@ -205,9 +268,43 @@ def build_template_dataframe(
         enrich_cols = ["Mã hàng", "Nhóm hàng(3 Cấp)", "Thương hiệu"]
         if "Tên hàng" in enrichment.columns:
             enrich_cols.append("Tên hàng")
+        if "Loại máy xe" in enrichment.columns:
+            enrich_cols.append("Loại máy xe")
+        if "Tên xe" in enrichment.columns:
+            enrich_cols.append("Tên xe")
         if "Thuộc tính" in enrichment.columns:
             enrich_cols.append("Thuộc tính")
+        if "Mô tả" in enrichment.columns:
+            enrich_cols.append("Mô tả")
         df = df.merge(enrichment[enrich_cols], on="Mã hàng", how="left")
+
+    # Fill fallback values for enrichment columns
+    df["Nhóm hàng(3 Cấp)"] = df.get("Nhóm hàng(3 Cấp)", pd.Series(dtype=str)).fillna(
+        "Phụ tùng khác>>Xe khác"
+    )
+    df["Thương hiệu"] = df.get("Thương hiệu", pd.Series(dtype=str)).fillna(
+        "Chưa có thương hiệu"
+    )
+    df["Loại máy xe"] = df.get("Loại máy xe", pd.Series(dtype=str)).fillna("")
+    df["Tên xe"] = df.get("Tên xe", pd.Series(dtype=str)).fillna("")
+
+    if fallback_names is not None and not fallback_names.empty:
+        if "Tên hàng" in df.columns:
+            fallback_map = fallback_names.set_index("Mã hàng")["Tên hàng"].to_dict()
+
+            df["Tên hàng"] = df["Tên hàng"].fillna(pd.NA).replace("", pd.NA)
+
+            df["Tên hàng"] = df.apply(
+                lambda row: (
+                    row["Tên hàng"]
+                    if pd.notna(row["Tên hàng"]) and row["Tên hàng"] != ""
+                    else fallback_map.get(row["Mã hàng"], "")
+                ),
+                axis=1,
+            )
+
+            fallback_count = (df["Tên hàng"].isin(fallback_map.values())).sum()
+            logger.info(f"Applied fallback product names for {fallback_count} products")
 
     template = ProductTemplate()
     result = pd.DataFrame(index=df.index)
@@ -244,7 +341,6 @@ def build_template_dataframe(
         "ĐVT",
         "Mã ĐVT Cơ bản",
         "Quy đổi",
-        "Thuộc tính",
         "Mã HH Liên quan",
         "Hình ảnh (url1,url2...)",
         "Sử dụng Imei",
@@ -260,6 +356,8 @@ def build_template_dataframe(
     for col in empty_cols:
         if col == "Thuộc tính" and "Thuộc tính" in df.columns:
             result[col] = df["Thuộc tính"]
+        elif col == "Mô tả" and "Mô tả" in df.columns:
+            result[col] = df["Mô tả"]
         else:
             result[col] = ""
 
@@ -313,6 +411,7 @@ def write_to_spreadsheet(
     df: pd.DataFrame,
     spreadsheet_id: str,
     sheet_name: str,
+    raw_columns: list[int] = None,
 ) -> bool:
     """Write DataFrame to Google Spreadsheet as a sheet tab.
 
@@ -320,12 +419,13 @@ def write_to_spreadsheet(
         df: DataFrame to write
         spreadsheet_id: Google Spreadsheet ID
         sheet_name: Name of the sheet tab
+        raw_columns: Optional list of column indices to upload as RAW
 
     Returns:
         True if successful, False otherwise
     """
     try:
-        from src.modules.google_api import connect_to_drive, write_sheet_data
+        from src.modules.google_api import connect_to_drive, upload_dataframe_to_sheet
     except ImportError:
         logger.error("Cannot import google_api. Cannot write to spreadsheet.")
         return False
@@ -337,7 +437,13 @@ def write_to_spreadsheet(
         values = [df.columns.tolist()] + df.values.tolist()
         values = [["" if pd.isna(v) else v for v in row] for row in values]
 
-        success = write_sheet_data(sheets_service, spreadsheet_id, sheet_name, values)
+        success = upload_dataframe_to_sheet(
+            sheets_service,
+            spreadsheet_id,
+            sheet_name,
+            df,
+            raw_columns=raw_columns,
+        )
         if success:
             logger.info(f"Successfully wrote {len(df)} rows to '{sheet_name}' sheet")
         return success
@@ -371,11 +477,11 @@ def process(
 
     try:
         nhap_file = find_latest_file(staging_dir, CONFIG["nhap_pattern"])
-        nhap_df = pd.read_csv(nhap_file)
+        nhap_df = StagingCache.get_dataframe(nhap_file)
         logger.info(f"Loaded nhập data: {len(nhap_df)} rows")
 
         xuat_file = find_latest_file(staging_dir, CONFIG["xuat_pattern"])
-        xuat_df = pd.read_csv(xuat_file)
+        xuat_df = StagingCache.get_dataframe(xuat_file)
         logger.info(f"Loaded xuất data: {len(xuat_df)} rows")
 
         inventory_df = get_latest_inventory(staging_dir)
@@ -399,6 +505,9 @@ def process(
 
         prices_df = calculate_max_selling_price(xuat_df)
 
+        # Note: fetch_product_lookup() calls Google Sheets API directly, bypassing StagingCache.
+        # This is intentional - lookup data is external enrichment data fetched on-demand,
+        # not a local CSV file in the pipeline stages that benefits from mtime-based caching.
         lookup_df = fetch_product_lookup()
 
         if lookup_df.empty:
@@ -406,8 +515,8 @@ def process(
             enrichment_df = pd.DataFrame(
                 {
                     "Mã hàng": nhap_df["Mã hàng"].unique(),
-                    "Nhóm hàng(3 Cấp)": "Chưa phân loại",
-                    "Thương hiệu": "Chưa xác định",
+                    "Nhóm hàng(3 Cấp)": "Chưa có nhóm hàng",
+                    "Thương hiệu": "Chưa có thương hiệu",
                     "Tên hàng": "",
                 }
             )
@@ -446,8 +555,10 @@ def process(
         )
         logger.info(f"Generated product codes for {len(product_codes)} products")
 
+        fallback_names = get_product_names_from_nhap(nhap_df)
+
         template_df = build_template_dataframe(
-            product_codes, inventory_df, prices_df, enrichment_df
+            product_codes, inventory_df, prices_df, enrichment_df, fallback_names
         )
 
         if write_to_sheets:
@@ -455,6 +566,7 @@ def process(
                 template_df,
                 CONFIG["reports_spreadsheet_id"],
                 CONFIG["products_sheet_name"],
+                raw_columns=[2],
             )
             if not success:
                 logger.warning("Failed to write to spreadsheet, continuing anyway...")

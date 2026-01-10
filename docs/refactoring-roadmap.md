@@ -35,7 +35,7 @@ Legacy scripts are being refactored into raw source modules for better organizat
 | N/A | `import_export_receipts` | `generate_products_xlsx.py` | ✅ **Added** - Products XLSX export |
 | N/A | `import_export_receipts` | `extract_attributes.py` | ✅ **Added** - Attribute extraction |
 | N/A | `import_export_receipts` | `reconcile_inventory.py` | ✅ **Added** - Inventory reconciliation |
-| N/A | `receivable` | `generate_customers_xlsx_v2.py` | ✅ **Added** - Customers XLSX export |
+| N/A | `receivable` | `generate_customers_xlsx.py` | ✅ **Added** - Customers XLSX export |
 | N/A | `payable` | `generate_suppliers_xlsx.py` | ✅ **Added** - Suppliers XLSX export |
 
 ## Pipeline Flow (ingest → transform by raw source → validate → export)
@@ -52,8 +52,8 @@ Import/Export Receipts:
   └── reconcile_inventory.py → Inventory reconciliation
     ↓
 Receivable:
-  └── generate_customers_xlsx_v2.py → Customers XLSX
-    ↓
+  └── generate_customers_xlsx.py → Customers XLSX
+     ↓
 Payable:
   └── generate_suppliers_xlsx.py → Suppliers XLSX
     ↓

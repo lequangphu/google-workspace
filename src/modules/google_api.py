@@ -4,10 +4,14 @@ import csv
 import json
 import logging
 import re
+import socket
+import ssl
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, TypedDict
+
+import pandas as pd
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -16,6 +20,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
+
+WORKSPACE_ROOT = Path(__file__).parent.parent.parent
 
 
 class SheetMetadata(TypedDict):
@@ -182,8 +188,8 @@ def authenticate_google():
     Returns:
         Credentials object for Google API calls.
     """
-    credentials_path = Path("credentials.json")
-    token_path = Path("token.json")
+    credentials_path = WORKSPACE_ROOT / "credentials.json"
+    token_path = WORKSPACE_ROOT / "token.json"
 
     creds = None
     if token_path.exists():
@@ -290,6 +296,35 @@ def get_sheet_tabs(sheets_service, spreadsheet_id):
         return []
 
 
+def get_sheet_id_by_name(sheets_service, spreadsheet_id, sheet_name):
+    """Get sheet ID by sheet name.
+
+    Args:
+        sheets_service: Google Sheets API service object.
+        spreadsheet_id: ID of the spreadsheet.
+        sheet_name: Name of the sheet tab.
+
+    Returns:
+        Sheet ID if found, None otherwise.
+    """
+    try:
+        result = (
+            sheets_service.spreadsheets()
+            .get(
+                spreadsheetId=spreadsheet_id, fields="sheets.properties(sheetId,title))"
+            )
+            .execute()
+        )
+        time.sleep(API_CALL_DELAY)
+        for sheet in result.get("sheets", []):
+            if sheet["properties"]["title"] == sheet_name:
+                return sheet["properties"]["sheetId"]
+        return None
+    except HttpError as e:
+        logger.error(f"Failed to get sheet ID for {sheet_name}: {e}")
+        return None
+
+
 def read_sheet_data(sheets_service, spreadsheet_id, sheet_name):
     """Read data from a sheet tab with retry logic.
 
@@ -333,6 +368,13 @@ def read_sheet_data(sheets_service, spreadsheet_id, sheet_name):
                     f"Failed to read sheet {sheet_name} from {spreadsheet_id}: {e}"
                 )
                 return []
+        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
+            wait_time = 2**attempt
+            logger.warning(
+                f"Timeout reading {sheet_name}, retrying in {wait_time}s "
+                f"(attempt {attempt + 1}/{max_retries}): {e}"
+            )
+            time.sleep(wait_time)
 
     logger.error(f"Failed to read sheet {sheet_name} after {max_retries} retries")
     return []
@@ -407,6 +449,146 @@ def write_sheet_data(
                     f"Failed to write sheet {sheet_name} to {spreadsheet_id}: {e}"
                 )
                 return False
+        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
+            wait_time = 2**attempt
+            logger.warning(
+                f"Timeout writing {sheet_name}, retrying in {wait_time}s "
+                f"(attempt {attempt + 1}/{max_retries}): {e}"
+            )
+            time.sleep(wait_time)
+
+    logger.error(f"Failed to write sheet {sheet_name} after {max_retries} retries")
+    return False
+
+
+def upload_dataframe_to_sheet(
+    sheets_service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    df: pd.DataFrame,
+    raw_columns: list[int] = None,
+) -> bool:
+    """Upload DataFrame to Google Sheet with optional raw column handling.
+
+    Creates sheet if it doesn't exist. Clears existing content before writing.
+    Specified columns (raw_columns) are uploaded with valueInputOption="RAW"
+    to preserve formatting (e.g., leading zeros in product codes).
+    All other columns use valueInputOption="USER_ENTERED" for formula parsing.
+
+    Args:
+        sheets_service: Google Sheets API service object.
+        spreadsheet_id: ID of the spreadsheet.
+        sheet_name: Name of the sheet tab.
+        df: pandas DataFrame to upload.
+        raw_columns: Optional list of column indices (0-based) to upload as RAW.
+                    e.g., [0] for first column, [1] for "Mã khách hàng".
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    max_retries = 3
+
+    for attempt in range(max_retries):
+        try:
+            spreadsheet = (
+                sheets_service.spreadsheets()
+                .get(
+                    spreadsheetId=spreadsheet_id,
+                    fields="sheets(properties(sheetId,title))",
+                )
+                .execute()
+            )
+
+            existing_sheet_id = None
+            for sheet in spreadsheet.get("sheets", []):
+                if sheet["properties"]["title"] == sheet_name:
+                    existing_sheet_id = sheet["properties"]["sheetId"]
+                    break
+
+            if existing_sheet_id is not None:
+                sheets_service.spreadsheets().values().clear(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"'{sheet_name}'!A:Z",
+                ).execute()
+            else:
+                request = {"addSheet": {"properties": {"title": sheet_name}}}
+                sheets_service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id, body={"requests": [request]}
+                ).execute()
+
+            if raw_columns:
+                for raw_col_idx in raw_columns:
+                    col_letter = chr(65 + raw_col_idx)
+                    col_data = df.iloc[:, raw_col_idx].astype(str).tolist()
+                    col_values = [[v] for v in col_data]
+
+                    sheets_service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id,
+                        range=f"'{sheet_name}'!{col_letter}2:{col_letter}",
+                        valueInputOption="RAW",
+                        body={"values": col_values},
+                    ).execute()
+                    time.sleep(API_CALL_DELAY)
+
+                non_raw_cols = [
+                    i for i in range(len(df.columns)) if i not in raw_columns
+                ]
+                if non_raw_cols:
+                    for non_raw_col_idx in non_raw_cols:
+                        col_letter = chr(65 + non_raw_col_idx)
+                        col_name = df.columns[non_raw_col_idx]
+                        col_data = (
+                            df.iloc[:, non_raw_col_idx]
+                            .astype(object)
+                            .fillna("")
+                            .tolist()
+                        )
+                        col_values = [[col_name]] + [[v] for v in col_data]
+
+                        sheets_service.spreadsheets().values().update(
+                            spreadsheetId=spreadsheet_id,
+                            range=f"'{sheet_name}'!{col_letter}1:{col_letter}",
+                            valueInputOption="USER_ENTERED",
+                            body={"values": col_values},
+                        ).execute()
+                        time.sleep(API_CALL_DELAY)
+            else:
+                values = [df.columns.tolist()] + df.astype(object).fillna(
+                    ""
+                ).values.tolist()
+
+                sheets_service.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"'{sheet_name}'!A1",
+                    valueInputOption="USER_ENTERED",
+                    body={"values": values},
+                ).execute()
+
+            logger.info(f"Successfully uploaded {len(df)} rows to '{sheet_name}'")
+            if raw_columns:
+                logger.info(f"  Raw columns (preserved): {raw_columns}")
+            return True
+
+        except HttpError as e:
+            if e.resp.status == 429:
+                wait_time = 2**attempt
+                logger.warning(
+                    f"Rate limited writing {sheet_name}, retrying in {wait_time}s "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(
+                    f"Failed to write sheet {sheet_name} to {spreadsheet_id}: {e}"
+                )
+                return False
+        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
+            wait_time = 2**attempt
+            logger.warning(
+                f"Timeout writing {sheet_name}, retrying in {wait_time}s "
+                f"(attempt {attempt + 1}/{max_retries}): {e}"
+            )
+            time.sleep(wait_time)
 
     logger.error(f"Failed to write sheet {sheet_name} after {max_retries} retries")
     return False

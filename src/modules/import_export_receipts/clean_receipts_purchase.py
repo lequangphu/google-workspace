@@ -15,7 +15,6 @@ This script:
 """
 
 import csv
-import json
 import logging
 import re
 import tomllib
@@ -26,6 +25,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from src.modules.import_export_receipts.product_disambiguation import (
+    disambiguate_product_codes,
+    log_disambiguation_summary,
+)
+
+# ============================================================================
+# LOGGING SETUP
 # ============================================================================
 # CONFIGURATION (ADR-1: Configuration-Driven Pipeline)
 # ============================================================================
@@ -678,30 +684,17 @@ def create_reconciliation_checkpoint(
             f"[Expected ~9.6% from warehouse filtering]"
         )
 
-    # Step 8: Log file-level dropouts exceeding 15%
-    high_dropout_files = [
-        (fname, stats["dropout_pct"])
-        for fname, stats in file_dropout.items()
-        if stats["dropout_pct"] > 15
-    ]
-    if high_dropout_files:
-        logger.warning(
-            f"Files with dropout > 15%: "
-            f"{', '.join(f'{fname} ({pct:.1f}%)' for fname, pct in high_dropout_files)}"
+    # Log file-level dropouts exceeding 15%
+    if file_dropout:
+        logger.info(
+            f"Files with >15% dropout: {[fname for fname, stats in file_dropout.items() if stats['dropout_pct'] > 15]}"
         )
-
-    # Step 9: Save reconciliation report
-    report_filename = "reconciliation_report_clean_receipts_purchase.json"
-    report_path = output_filepath.parent / report_filename
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
 
     logger.info("=" * 70)
     logger.info("RECONCILIATION REPORT")
     logger.info(f"Input:  {total_input_qty:,.0f} qty across {total_input_rows:,} rows")
     logger.info(f"Output: {output_total_qty:,.0f} qty across {output_row_count:,} rows")
     logger.info(f"Dropout: {report['reconciliation']['quantity_dropout_pct']:.1f}%")
-    logger.info(f"File-by-file breakdown saved to: {report_filename}")
     for alert in report["alerts"]:
         logger.warning(alert)
     logger.info("=" * 70)
@@ -799,13 +792,62 @@ def transform_purchase_receipts(
         columns={"_source_file_month": "Tháng", "_source_file_year": "Năm"}
     )
 
-    # Step 8: Standardize column types
+    # Step 9: Clean product names (Phase 1 & 2)
+    from src.modules.import_export_receipts.clean_product_names import (
+        clean_product_name,
+        standardize_product_type,
+    )
+    from src.modules.import_export_receipts.product_disambiguation import (
+        extract_brand_from_name,
+    )
+
+    logger.info("=" * 70)
+    logger.info("Step 9: Cleaning product names (Phase 1 & 2)")
+    logger.info("=" * 70)
+
+    if "Tên hàng" in final_combined_df.columns:
+        # Apply Phase 1+2 cleaning
+        final_combined_df["Tên hàng_clean"] = final_combined_df["Tên hàng"].apply(
+            lambda n: standardize_product_type(clean_product_name(n))
+        )
+
+        # Extract brand information
+        final_combined_df["Brand"] = final_combined_df["Tên hàng_clean"].apply(
+            extract_brand_from_name
+        )
+
+        # Log cleaning summary
+        cleaned_count = (
+            final_combined_df["Tên hàng"] != final_combined_df["Tên hàng_clean"]
+        ).sum()
+        unique_brands = final_combined_df["Brand"].nunique()
+        logger.info(f"Cleaned {cleaned_count} product names")
+        logger.info(f"Unique brands: {unique_brands}")
+
+    # Step 9: Disambiguate product codes
+    logger.info("=" * 70)
+    logger.info("Step 9: Disambiguating product codes")
+    logger.info("=" * 70)
+    final_combined_df, disambig_stats = disambiguate_product_codes(
+        final_combined_df,
+        code_col="Mã hàng",
+        name_col="Tên hàng_clean",
+        date_col="Ngày",
+    )
+    log_disambiguation_summary(disambig_stats)
+
+    # Intentional: Replace original Tên hàng with cleaned version after disambiguation.
+    # The original uncleaned names are no longer needed - all downstream processing
+    # uses the standardized, cleaned names for consistency.
+    final_combined_df = final_combined_df.rename(columns={"Tên hàng_clean": "Tên hàng"})
+
+    # Step 10: Standardize column types
     final_combined_df = standardize_column_types(final_combined_df)
 
-    # Step 9: Reorder and sort
+    # Step 11: Reorder and sort columns
     final_combined_df = reorder_and_sort(final_combined_df)
 
-    # Step 10: Save to validated directory
+    # Step 12: Save to validated directory
     output_dir.mkdir(parents=True, exist_ok=True)
     output_filename = generate_output_filename(final_combined_df)
     output_filepath = output_dir / output_filename

@@ -20,9 +20,8 @@ Output:
 """
 
 import logging
-import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import pandas as pd
 import toml
@@ -33,91 +32,17 @@ from src.erp.templates import CustomerTemplate
 from src.modules.google_api import (
     authenticate_google,
     read_sheet_data,
-    write_sheet_data,
+    upload_dataframe_to_sheet,
 )
+from src.utils.data_cleaning import (
+    generate_entity_codes,
+    merge_master_data,
+    parse_numeric,
+    split_phone_numbers,
+)
+from src.utils.staging_cache import StagingCache
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# CLEANING FUNCTIONS (from legacy clean_customers.py and clean_debts.py)
-# ============================================================================
-
-
-def clean_phone_number(phone: str) -> str:
-    """Clean a single phone number by removing all dots, commas, spaces, and trailing punctuation.
-
-    Args:
-        phone: Raw phone number string
-
-    Returns:
-        Cleaned phone number
-    """
-    if not phone:
-        return ""
-    phone = str(phone).strip()
-    phone = re.sub(r"[.,;:]", "", phone)
-    phone = re.sub(r"\s+", "", phone)
-    return phone
-
-
-def split_phone_numbers(phone_str: str) -> List[str]:
-    """Split phone numbers by common delimiters and clean them.
-
-    Handles delimiters: /, -, and multiple spaces.
-
-    Args:
-        phone_str: Raw phone string potentially containing multiple numbers
-
-    Returns:
-        List of cleaned phone numbers
-    """
-    if not phone_str or pd.isna(phone_str):
-        return []
-
-    phone_str = str(phone_str).strip()
-    if not phone_str or phone_str == "None":
-        return []
-
-    if "/" in phone_str or " - " in phone_str:
-        phones = re.split(r"\s*[/-]\s*", phone_str)
-    else:
-        phones = [phone_str]
-
-    cleaned = [clean_phone_number(p) for p in phones]
-    cleaned = [p for p in cleaned if p]
-
-    return cleaned
-
-
-def parse_numeric(value: str) -> str:
-    """Parse Vietnamese number format to raw number string.
-
-    Handles:
-    - Vietnamese thousands separator (dots): "1.500.000" -> "1500000"
-    - Negative values in parentheses: "(30000)" -> "-30000"
-    - Dash as zero: "-" -> "0"
-
-    Args:
-        value: Raw numeric string from Google Sheets
-
-    Returns:
-        Cleaned numeric string suitable for float conversion
-    """
-    if not value or pd.isna(value):
-        return "0"
-
-    value = str(value).strip()
-
-    if value == "-" or value == "":
-        return "0"
-
-    value = value.replace(".", "").replace(" ", "")
-
-    if value.startswith("(") and value.endswith(")"):
-        value = "-" + value[1:-1]
-
-    return value
 
 
 DATA_STAGING_DIR = Path.cwd() / "data" / "01-staging"
@@ -125,8 +50,15 @@ IMPORT_EXPORT_STAGING = DATA_STAGING_DIR / "import_export"
 DATA_EXPORT_DIR = Path.cwd() / "data" / "03-erp-export"
 PIPELINE_CONFIG = Path.cwd() / "pipeline.toml"
 
-RECEIVABLE_SPREADSHEET_ID = "1kouZwJy8P_zZhjjn49Lfbp3KN81mhHADV7VKDhv5xkM"
-EXPORT_SPREADSHEET_ID = "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k"
+_CONFIG = toml.load(PIPELINE_CONFIG) if PIPELINE_CONFIG.exists() else {}
+RECEIVABLE_SPREADSHEET_ID = (
+    _CONFIG.get("sources", {})
+    .get("receivable", {})
+    .get("spreadsheet_id", "1kouZwJy8P_zZhjjn49Lfbp3KN81mhHADV7VKDhv5xkM")
+)
+EXPORT_SPREADSHEET_ID = _CONFIG.get("upload", {}).get(
+    "google_sheets_id_reports", "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k"
+)
 EXPORT_SHEET_NAME = "customers_to_import"
 
 
@@ -325,7 +257,7 @@ def load_sale_transactions() -> pd.DataFrame:
     all_data = []
     for f in receipt_files:
         try:
-            df = pd.read_csv(f, encoding="utf-8")
+            df = StagingCache.get_dataframe(f)
             all_data.append(df)
             logger.info(f"  Loaded {len(df)} rows from {f.name}")
         except Exception as e:
@@ -377,76 +309,25 @@ def merge_all_data(
     transactions_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Merge all data sources by customer name."""
-    logger.info("Merging all data sources...")
-
-    all_customers = set()
-
-    if not customers_df.empty and "Tên khách hàng" in customers_df.columns:
-        all_customers |= set(customers_df["Tên khách hàng"].dropna().unique())
-
-    if not debts_df.empty and "Tên khách hàng" in debts_df.columns:
-        all_customers |= set(debts_df["Tên khách hàng"].dropna().unique())
-
-    if not transactions_df.empty and "Tên khách hàng" in transactions_df.columns:
-        all_customers |= set(transactions_df["Tên khách hàng"].dropna().unique())
-
-    all_customers = {c for c in all_customers if c and str(c).strip()}
-
-    if not all_customers:
-        logger.info("No customers found in any source")
-        return pd.DataFrame()
-
-    logger.info(f"Total unique customers: {len(all_customers)}")
-
-    result = pd.DataFrame({"Tên khách hàng": sorted(list(all_customers))})
-
-    if not customers_df.empty and "Tên khách hàng" in customers_df.columns:
-        customers_df = customers_df.copy()
-        customers_df["Tên khách hàng"] = customers_df["Tên khách hàng"].str.strip()
-        result = result.merge(customers_df, on="Tên khách hàng", how="left")
-
-    if not debts_df.empty and "Tên khách hàng" in debts_df.columns:
-        debts_df = debts_df.copy()
-        debts_df["Tên khách hàng"] = debts_df["Tên khách hàng"].str.strip()
-        result = result.merge(debts_df, on="Tên khách hàng", how="left")
-
-    if not transactions_df.empty and "Tên khách hàng" in transactions_df.columns:
-        transactions_df = transactions_df.copy()
-        transactions_df["Tên khách hàng"] = transactions_df[
-            "Tên khách hàng"
-        ].str.strip()
-        result = result.merge(transactions_df, on="Tên khách hàng", how="left")
-
-    result = result.fillna("")
-    return result
+    return merge_master_data(
+        master_df=customers_df,
+        debts_df=debts_df,
+        transactions_df=transactions_df,
+        name_column="Tên khách hàng",
+        debt_column="Nợ cần thu hiện tại",
+    )
 
 
 def generate_customer_codes(df: pd.DataFrame) -> pd.DataFrame:
     """Generate unified customer codes (KH000001, KH000002, ...)."""
-    if df.empty:
-        return df
-
-    df = df.copy()
-
-    if "first_date" in df.columns:
-        df["first_date"] = pd.to_datetime(df["first_date"], errors="coerce")
-    else:
-        df["first_date"] = pd.NaT
-
-    if "total_amount" not in df.columns:
-        df["total_amount"] = 0
-    df["total_amount"] = pd.to_numeric(df["total_amount"], errors="coerce").fillna(0)
-
-    df = df.sort_values(
-        by=["first_date", "total_amount", "Tên khách hàng"],
-        ascending=[True, False, True],
-        na_position="last",
-    ).reset_index(drop=True)
-
-    df["Mã khách hàng"] = df.index.map(lambda x: f"KH{x + 1:06d}")
-
-    logger.info(f"Generated {len(df)} customer codes")
-    return df
+    return generate_entity_codes(
+        df=df,
+        name_column="Tên khách hàng",
+        code_column="Mã khách hàng",
+        code_prefix="KH",
+        date_column="first_date",
+        amount_column="total_amount",
+    )
 
 
 def map_to_kiotviet_template(df: pd.DataFrame) -> pd.DataFrame:
@@ -661,10 +542,14 @@ def upload_to_google_sheet(df: pd.DataFrame, sheets_service) -> bool:
             formatted_row.append(format_value(row[col], data_type))
         rows.append(formatted_row)
 
-    values = [header] + rows
+    template_df = pd.DataFrame(rows, columns=header)
 
-    success = write_sheet_data(
-        sheets_service, EXPORT_SPREADSHEET_ID, EXPORT_SHEET_NAME, values
+    success = upload_dataframe_to_sheet(
+        sheets_service,
+        EXPORT_SPREADSHEET_ID,
+        EXPORT_SHEET_NAME,
+        template_df,
+        raw_columns=[1],
     )
 
     if success:

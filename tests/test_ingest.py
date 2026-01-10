@@ -182,7 +182,7 @@ class TestRawSourcesConfiguration:
         config = RAW_SOURCES["import_export_receipts"]
         assert config["type"] == "folder"
         assert isinstance(config["folder_ids"], list)
-        assert len(config["folder_ids"]) == 7
+        assert len(config["folder_ids"]) == 3
         assert "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj" in config["folder_ids"]
         assert config["tabs"] == ["CT.NHAP", "CT.XUAT", "XNT"]
         assert config["output_subdir"] == "import_export"
