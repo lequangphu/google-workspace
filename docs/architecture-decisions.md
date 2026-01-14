@@ -85,14 +85,15 @@ ingest.py configuration:
 - cashflow: Sheets Tiền gửi, Tien mat → cashflow_deposits.csv, cashflow_cash.csv
 
 src/modules/
-├── import_export_receipts/  # Raw source: XUẤT NHẬP TỒN TỔNG T* (multiple sheets)
-│   ├── clean_receipts_purchase.py
-│   ├── clean_receipts_sale.py
-│   ├── clean_inventory.py
-│   ├── extract_products.py
-│   ├── extract_attributes.py
-│   ├── reconcile_inventory.py
-│   └── generate_products_xlsx.py
+ ├── import_export_receipts/  # Raw source: XUẤT NHẬP TỒN TỔNG T* (multiple sheets)
+ │   ├── clean_receipts_purchase.py
+ │   ├── clean_receipts_sale.py
+ │   ├── clean_inventory.py
+ │   ├── extract_products.py
+ │   ├── extract_attributes.py
+ │   ├── verify_disambiguation.py
+ │   ├── upload_cleaned_to_sheets.py
+ │   └── generate_products_xlsx.py
 ├── receivable/              # Raw source: TỔNG CÔNG NỢ + Thong tin KH
 │   └── generate_customers_xlsx.py
 ├── payable/                 # Raw source: MÃ CTY + TỔNG HỢP

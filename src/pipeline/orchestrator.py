@@ -96,11 +96,9 @@ TRANSFORM_MODULES = {
     "import_export_receipts": [
         "clean_inventory.py",
         "clean_receipts_purchase.py",
-        "generate_opening_balance_receipts.py",
         "clean_receipts_sale.py",
         "extract_products.py",
         "extract_attributes.py",
-        "reconcile_inventory.py",
     ],
     "receivable": [
         "generate_customers_xlsx.py",
@@ -170,50 +168,6 @@ logger = logging.getLogger(__name__)
 
 
 # === HELPER FUNCTIONS ===
-
-
-def get_file_mtime(filepath: Path) -> Optional[float]:
-    """Get file modification time (UTC timestamp)."""
-    if filepath.exists():
-        return filepath.stat().st_mtime
-    return None
-
-
-def get_directory_mtime(dirpath: Path) -> Optional[float]:
-    """Get most recent modification time in directory (recursive)."""
-    if not dirpath.exists():
-        return None
-
-    max_mtime = None
-    for file in dirpath.rglob("*"):
-        if file.is_file():
-            mtime = file.stat().st_mtime
-            if max_mtime is None or mtime > max_mtime:
-                max_mtime = mtime
-
-    return max_mtime
-
-
-def files_modified_since(dirpath: Path, since_time: Optional[float]) -> bool:
-    """Check if any files in directory were modified after since_time."""
-    if not dirpath.exists():
-        return True  # Directory doesn't exist, consider as "modified"
-
-    if since_time is None:
-        return True  # No baseline, consider as modified
-
-    for file in dirpath.rglob("*"):
-        if file.is_file() and file.stat().st_mtime > since_time:
-            return True
-
-    return False
-
-
-def list_csv_files(dirpath: Path) -> List[Path]:
-    """List all CSV files in directory and subdirectories."""
-    if not dirpath.exists():
-        return []
-    return sorted(dirpath.rglob("*.csv"))
 
 
 def run_command(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
@@ -597,32 +551,11 @@ def step_upload(modules_filter: Optional[List[str]] = None) -> bool:
 
 def should_run_transform() -> bool:
     """Determine if transformation step should run."""
-    # Always transform if staging data directory is missing
-    if not DATA_STAGING_DIR.exists():
-        logger.info("Staging data directory doesn't exist, running transform")
-        return True
-
-    # Check if any staging CSV files are missing
-    raw_files = list_csv_files(DATA_RAW_DIR)
-    staging_files = list_csv_files(DATA_STAGING_DIR)
-
-    if not staging_files and raw_files:
-        logger.info("No staging files found but raw files exist, running transform")
-        return True
-
-    # Check if raw directory was modified more recently than staging directory
-    raw_mtime = get_directory_mtime(DATA_RAW_DIR)
-    staging_mtime = get_directory_mtime(DATA_STAGING_DIR)
-
-    if raw_mtime and staging_mtime and raw_mtime > staging_mtime:
-        logger.info("Raw data was modified after staging data, running transform")
-        return True
-
-    logger.info("Staging data is up-to-date, skipping transform")
-    return False
+    logger.info("Transform step always runs when requested")
+    return True
 
 
-def should_run_upload(transform_succeeded: bool) -> bool:
+def should_run_upload() -> bool:
     """Determine if upload step should run."""
     logger.info("Upload step is disabled")
     return False
@@ -670,7 +603,7 @@ def execute_pipeline(
                 logger.error("ERP export failed, but continuing pipeline")
 
         elif step == "upload":
-            if should_run_upload(transform_succeeded):
+            if should_run_upload():
                 if not step_upload(modules_filter=modules_filter):
                     logger.error("Upload failed, but data is ready")
                     return False

@@ -35,7 +35,7 @@ from tqdm import tqdm
 # ============================================================================
 
 CONFIG = {
-    "input_dir": Path.cwd() / "data" / "raw",
+    "input_dir": Path.cwd() / "data" / "00-raw" / "import_export",
     "output_dir": Path.cwd() / "data" / "cleaned",
     "file_pattern": r"(\d{4})_(\d{1,2})_XNT\.csv",
     "file_suffix": "XNT.csv",

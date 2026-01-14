@@ -63,7 +63,7 @@ def find_latest_file(directory: Path, pattern: str) -> Optional[Path]:
 def get_latest_inventory(xnt_dir: Path) -> pd.DataFrame:
     """Load clean_inventory output and extract latest month for each product.
 
-    Returns DataFrame with columns: Mã hàng, Số lượng cuối kỳ, Đơn giá cuối kỳ
+    Returns DataFrame with columns: Mã hàng, Tồn cuối kỳ, Đơn giá (calculated)
     """
     xnt_files = list(xnt_dir.glob(CONFIG["xnt_pattern"]))
     xnt_files = [f for f in xnt_files if "adjustments" not in f.name.lower()]
@@ -84,17 +84,20 @@ def get_latest_inventory(xnt_dir: Path) -> pd.DataFrame:
     combined["Ngày"] = pd.to_datetime(combined["Ngày"], errors="coerce")
 
     latest = combined.loc[combined.groupby("Mã hàng")["Ngày"].idxmax()]
-    result = pd.DataFrame(
-        {
-            "Mã hàng": latest["Mã hàng"],
-            "Số lượng cuối kỳ": pd.to_numeric(
-                latest["Số lượng cuối kỳ"], errors="coerce"
-            ).clip(lower=0),
-            "Đơn giá cuối kỳ": pd.to_numeric(
-                latest["Đơn giá cuối kỳ"], errors="coerce"
-            ),
-        }
+
+    result = pd.DataFrame({"Mã hàng": latest["Mã hàng"]})
+
+    result["Tồn cuối kỳ"] = pd.to_numeric(latest["Tồn cuối kỳ"], errors="coerce").clip(
+        lower=0
     )
+
+    result["Đơn giá"] = pd.NA
+    if "Giá trị cuối kỳ" in latest.columns:
+        valid_qty = result["Tồn cuối kỳ"] > 0
+        result.loc[valid_qty, "Đơn giá"] = (
+            latest.loc[valid_qty, "Giá trị cuối kỳ"]
+            / latest.loc[valid_qty, "Tồn cuối kỳ"]
+        )
 
     logger.info(f"Extracted latest inventory for {len(result)} products")
     return result
@@ -253,7 +256,7 @@ def build_template_dataframe(
 
     Args:
         product_codes: DataFrame with Mã hàng and Mã hàng mới
-        inventory: DataFrame with Số lượng cuối kỳ, Đơn giá cuối kỳ
+        inventory: DataFrame with Tồn cuối kỳ, Đơn giá
         prices: DataFrame with Giá bán
         enrichment: DataFrame with Nhóm hàng(3 Cấp), Thương hiệu, Tên hàng, Loại máy xe, Tên xe, Thuộc tính, Mô tả from Google Sheets
         fallback_names: Optional DataFrame with Mã hàng, Tên hàng from nhap data (shortest name)
@@ -321,11 +324,11 @@ def build_template_dataframe(
             "#,0.##0",
         ),
         "Giá vốn": (
-            pd.to_numeric(df.get("Đơn giá cuối kỳ", 0), errors="coerce").fillna(0),
+            pd.to_numeric(df.get("Đơn giá", 0), errors="coerce").fillna(0),
             "#,0.##0",
         ),
         "Tồn kho": (
-            pd.to_numeric(df.get("Số lượng cuối kỳ", 0), errors="coerce")
+            pd.to_numeric(df.get("Tồn cuối kỳ", 0), errors="coerce")
             .fillna(0)
             .astype(int),
             "#,0.##0",
@@ -495,7 +498,7 @@ def process(
         )
 
         products_with_inventory = set(
-            inventory_df[inventory_df["Số lượng cuối kỳ"] > 0]["Mã hàng"].unique()
+            inventory_df[inventory_df["Tồn cuối kỳ"] > 0]["Mã hàng"].unique()
         )
 
         valid_products = products_with_sales | products_with_inventory

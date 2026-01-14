@@ -5,181 +5,21 @@ from unittest.mock import MagicMock, patch
 
 from src.pipeline.orchestrator import (
     execute_pipeline,
-    get_directory_mtime,
-    get_file_mtime,
-    list_csv_files,
-    run_command,
     should_run_transform,
     should_run_upload,
 )
 
 
-class TestHelperFunctions:
-    """Test helper utility functions."""
-
-    def test_get_file_mtime_existing_file(self, tmp_path):
-        """Test getting mtime of existing file."""
-        test_file = tmp_path / "test.txt"
-        test_file.write_text("test")
-
-        mtime = get_file_mtime(test_file)
-        assert mtime is not None
-        assert isinstance(mtime, float)
-
-    def test_get_file_mtime_nonexistent_file(self, tmp_path):
-        """Test getting mtime of nonexistent file."""
-        nonexistent = tmp_path / "nonexistent.txt"
-        assert get_file_mtime(nonexistent) is None
-
-    def test_get_directory_mtime_with_files(self, tmp_path):
-        """Test getting mtime of directory with files."""
-        (tmp_path / "file1.csv").write_text("a")
-        (tmp_path / "file2.csv").write_text("b")
-
-        mtime = get_directory_mtime(tmp_path)
-        assert mtime is not None
-        assert isinstance(mtime, float)
-
-    def test_get_directory_mtime_empty_directory(self, tmp_path):
-        """Test getting mtime of empty directory."""
-        mtime = get_directory_mtime(tmp_path)
-        assert mtime is None
-
-    def test_get_directory_mtime_nonexistent(self, tmp_path):
-        """Test getting mtime of nonexistent directory."""
-        nonexistent = tmp_path / "nonexistent"
-        assert get_directory_mtime(nonexistent) is None
-
-    def test_list_csv_files(self, tmp_path):
-        """Test listing CSV files."""
-        (tmp_path / "file1.csv").write_text("a")
-        (tmp_path / "file2.csv").write_text("b")
-        (tmp_path / "file3.txt").write_text("c")
-
-        files = list_csv_files(tmp_path)
-        assert len(files) == 2
-        assert all(f.suffix == ".csv" for f in files)
-
-    def test_list_csv_files_empty_directory(self, tmp_path):
-        """Test listing CSV files in empty directory."""
-        files = list_csv_files(tmp_path)
-        assert files == []
-
-    def test_list_csv_files_nonexistent_directory(self, tmp_path):
-        """Test listing CSV files in nonexistent directory."""
-        nonexistent = tmp_path / "nonexistent"
-        files = list_csv_files(nonexistent)
-        assert files == []
-
-    def test_run_command_success(self):
-        """Test running successful command."""
-        returncode, stdout, stderr = run_command(["echo", "hello"])
-        assert returncode == 0
-        assert "hello" in stdout
-
-    def test_run_command_failure(self):
-        """Test running failing command."""
-        returncode, stdout, stderr = run_command(["false"])
-        assert returncode != 0
-
-    def test_run_command_with_cwd(self, tmp_path):
-        """Test running command in specific directory."""
-        (tmp_path / "test.txt").write_text("test")
-        returncode, stdout, stderr = run_command(["ls", "test.txt"], cwd=tmp_path)
-        assert returncode == 0
-
-
 class TestOrchestrationLogic:
     """Test orchestration decision logic."""
 
-    def test_should_run_transform_missing_directory(self, tmp_path):
-        """Test should_run_transform when directory missing."""
-        with patch(
-            "src.pipeline.orchestrator.DATA_STAGING_DIR", tmp_path / "nonexistent"
-        ):
-            assert should_run_transform() is True
+    def test_should_run_transform_always_true(self):
+        """Test should_run_transform always returns True."""
+        assert should_run_transform() is True
 
-    def test_should_run_transform_missing_staging_files(self, tmp_path):
-        """Test should_run_transform when staging files missing but raw exist."""
-        raw_dir = tmp_path / "raw"
-        staging_dir = tmp_path / "staging"
-        raw_dir.mkdir()
-        staging_dir.mkdir()
-        (raw_dir / "test.csv").write_text("data")
-
-        with (
-            patch("src.pipeline.orchestrator.DATA_RAW_DIR", raw_dir),
-            patch("src.pipeline.orchestrator.DATA_STAGING_DIR", staging_dir),
-        ):
-            assert should_run_transform() is True
-
-    def test_should_run_transform_up_to_date(self, tmp_path):
-        """Test should_run_transform when staging is up-to-date."""
-        import time
-
-        raw_dir = tmp_path / "raw"
-        staging_dir = tmp_path / "staging"
-        raw_dir.mkdir()
-        staging_dir.mkdir()
-
-        # Create raw file first
-        (raw_dir / "test.csv").write_text("data")
-        time.sleep(0.1)
-
-        # Create staging file after
-        (staging_dir / "test.csv").write_text("data")
-
-        with (
-            patch("src.pipeline.orchestrator.DATA_RAW_DIR", raw_dir),
-            patch("src.pipeline.orchestrator.DATA_STAGING_DIR", staging_dir),
-        ):
-            assert should_run_transform() is False
-
-    def test_should_run_transform_raw_modified_later(self, tmp_path):
-        """Test should_run_transform when raw modified after staging."""
-        import time
-
-        raw_dir = tmp_path / "raw"
-        staging_dir = tmp_path / "staging"
-        raw_dir.mkdir()
-        staging_dir.mkdir()
-
-        # Create staging file first
-        (staging_dir / "test.csv").write_text("data")
-        time.sleep(0.1)
-
-        # Create raw file after (newer)
-        (raw_dir / "test.csv").write_text("data")
-
-        with (
-            patch("src.pipeline.orchestrator.DATA_RAW_DIR", raw_dir),
-            patch("src.pipeline.orchestrator.DATA_STAGING_DIR", staging_dir),
-        ):
-            assert should_run_transform() is True
-
-    def test_should_run_upload_failed_transform(self):
-        """Test should_run_upload with failed transform."""
-        assert should_run_upload(False) is False
-
-    def test_should_run_upload_no_files(self, tmp_path):
-        """Test should_run_upload with no staging files."""
-        staging_dir = tmp_path / "staging"
-        staging_dir.mkdir()
-
-        with (
-            patch("src.pipeline.orchestrator.DATA_STAGING_DIR", staging_dir),
-            patch("src.pipeline.orchestrator.DATA_FINAL_DIR", tmp_path / "final"),
-        ):
-            assert should_run_upload(True) is False
-
-    def test_should_run_upload_success(self, tmp_path):
-        """Test should_run_upload with staging files."""
-        staging_dir = tmp_path / "staging"
-        staging_dir.mkdir()
-        (staging_dir / "test.csv").write_text("data")
-
-        with patch("src.pipeline.orchestrator.DATA_STAGING_DIR", staging_dir):
-            assert should_run_upload(True) is True
+    def test_should_run_upload_always_false(self):
+        """Test should_run_upload always returns False."""
+        assert should_run_upload() is False
 
 
 class TestMockFunctions:

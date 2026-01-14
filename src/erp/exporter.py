@@ -26,11 +26,11 @@ def _load_inventory_with_latest_month(inventory_path: Path) -> pd.DataFrame:
     """Load inventory data and extract latest month's ending quantities and unit costs.
 
     Reads clean_inventory.py output (which contains multiple months) and
-    extracts the "Số lượng cuối kỳ" (ending quantity) and "Đơn giá cuối kỳ"
-    (ending unit price) from the latest month for each product.
+    extracts "Tồn cuối kỳ" (ending quantity) and calculates "Đơn giá"
+    (unit price) from "Giá trị cuối kỳ" / "Tồn cuối kỳ".
 
     If the primary inventory_path is a validated summary, attempts to load
-    the clean_inventory staging file instead.
+    clean_inventory staging file instead.
 
     Args:
         inventory_path: Path to inventory CSV (validated or staging clean_inventory output)
@@ -56,12 +56,21 @@ def _load_inventory_with_latest_month(inventory_path: Path) -> pd.DataFrame:
             # Extract latest month for each product
             latest_inventory = df.loc[df.groupby("Mã hàng")["Ngày"].idxmax()]
 
-            # Create new DataFrame with mapping from Mã hàng to Số lượng cuối kỳ and Đơn giá cuối kỳ
+            # Create new DataFrame with mapping from Mã hàng to Tồn cuối kỳ and Đơn giá (calculated)
             result = pd.DataFrame()
             result["Mã hàng"] = latest_inventory["Mã hàng"]
-            result["Số lượng cuối kỳ"] = latest_inventory["Số lượng cuối kỳ"]
-            if "Đơn giá cuối kỳ" in latest_inventory.columns:
-                result["Đơn giá cuối kỳ"] = latest_inventory["Đơn giá cuối kỳ"]
+            result["Tồn cuối kỳ"] = pd.to_numeric(
+                latest_inventory["Tồn cuối kỳ"], errors="coerce"
+            )
+
+            # Calculate Đơn giá (unit price) from Giá trị / Tồn
+            result["Đơn giá"] = pd.NA
+            if "Giá trị cuối kỳ" in latest_inventory.columns:
+                valid_qty = result["Tồn cuối kỳ"] > 0
+                result.loc[valid_qty, "Đơn giá"] = (
+                    latest_inventory.loc[valid_qty, "Giá trị cuối kỳ"]
+                    / latest_inventory.loc[valid_qty, "Tồn cuối kỳ"]
+                )
 
             logger.info(
                 f"Extracted latest month inventory for {len(result)} unique products"
@@ -108,16 +117,21 @@ def _load_inventory_with_latest_month(inventory_path: Path) -> pd.DataFrame:
                             staging_df.groupby("Mã hàng")["Ngày"].idxmax()
                         ]
 
-                        # Create new DataFrame with mapping from Mã hàng to Số lượng cuối kỳ and Đơn giá cuối kỳ
+                        # Create new DataFrame with mapping from Mã hàng to Tồn cuối kỳ and Đơn giá (calculated)
                         result = pd.DataFrame()
                         result["Mã hàng"] = latest_inventory["Mã hàng"]
-                        result["Số lượng cuối kỳ"] = latest_inventory[
-                            "Số lượng cuối kỳ"
-                        ]
-                        if "Đơn giá cuối kỳ" in latest_inventory.columns:
-                            result["Đơn giá cuối kỳ"] = latest_inventory[
-                                "Đơn giá cuối kỳ"
-                            ]
+                        result["Tồn cuối kỳ"] = pd.to_numeric(
+                            latest_inventory["Tồn cuối kỳ"], errors="coerce"
+                        )
+
+                        # Calculate Đơn giá (unit price) from Giá trị / Tồn
+                        result["Đơn giá"] = pd.NA
+                        if "Giá trị cuối kỳ" in latest_inventory.columns:
+                            valid_qty = result["Tồn cuối kỳ"] > 0
+                            result.loc[valid_qty, "Đơn giá"] = (
+                                latest_inventory.loc[valid_qty, "Giá trị cuối kỳ"]
+                                / latest_inventory.loc[valid_qty, "Tồn cuối kỳ"]
+                            )
 
                         logger.info(
                             f"Extracted latest month inventory for {len(result)} unique products"
@@ -185,11 +199,11 @@ def export_products_xlsx(
     if not inventory_latest_qty.empty:
         inventory = inventory_latest_qty.copy()
 
-        # If Đơn giá cuối kỳ (unit cost) is present, rename to Giá vốn
-        if "Đơn giá cuối kỳ" in inventory.columns:
-            inventory["Giá vốn"] = inventory["Đơn giá cuối kỳ"]
+        # If Đơn giá (unit price) is present, rename to Giá vốn
+        if "Đơn giá" in inventory.columns:
+            inventory["Giá vốn"] = inventory["Đơn giá"]
             logger.info(
-                "Using latest month's Đơn giá cuối kỳ as Giá vốn from clean_inventory"
+                "Using calculated Đơn giá (Giá trị / Tồn) as Giá vốn from clean_inventory"
             )
         else:
             # Fall back to validated summary for cost if not in clean_inventory
@@ -200,7 +214,7 @@ def export_products_xlsx(
                     how="left",
                 )
                 logger.info(
-                    "Using Giá vốn from validated summary (Đơn giá cuối kỳ not in clean_inventory)"
+                    "Using Giá vốn from validated summary (calculated Đơn giá not in clean_inventory)"
                 )
     else:
         # Fallback: use validated summary

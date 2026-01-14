@@ -21,6 +21,10 @@ Legacy scripts are being refactored into raw source modules for better organizat
 - ✅ `clean_tong_no.py` (Debt data)
 - ✅ `pipeline.py` (orchestrator)
 
+**Removed**: 2 scripts (no longer needed)
+- 🗑️ `reconcile_inventory.py` - Reconciliation not needed for ERP migration
+- 🗑️ `generate_opening_balance_receipts.py` - Opening balance generation not needed
+
 **Status**: Full migration complete. All tests passing (153 passed, 1 skipped).
 
 ## Migration Mapping
@@ -34,7 +38,7 @@ Legacy scripts are being refactored into raw source modules for better organizat
 | `generate_product_info.py` | `import_export_receipts` | `extract_products.py` | ✅ **Migrated** - Product extraction, FIFO costing, price analysis |
 | N/A | `import_export_receipts` | `generate_products_xlsx.py` | ✅ **Added** - Products XLSX export |
 | N/A | `import_export_receipts` | `extract_attributes.py` | ✅ **Added** - Attribute extraction |
-| N/A | `import_export_receipts` | `reconcile_inventory.py` | ✅ **Added** - Inventory reconciliation |
+| N/A | `import_export_receipts` | `reconcile_inventory.py` | 🗑️ **Removed** - No longer needed |
 | N/A | `receivable` | `generate_customers_xlsx.py` | ✅ **Added** - Customers XLSX export |
 | N/A | `payable` | `generate_suppliers_xlsx.py` | ✅ **Added** - Suppliers XLSX export |
 
@@ -49,7 +53,7 @@ Import/Export Receipts:
   ├── clean_inventory.py (XNT)
   ├── extract_products.py → Products master data
   ├── extract_attributes.py → Product attributes
-  └── reconcile_inventory.py → Inventory reconciliation
+  └── verify_disambiguation.py → Cross-source product code validation
     ↓
 Receivable:
   └── generate_customers_xlsx.py → Customers XLSX

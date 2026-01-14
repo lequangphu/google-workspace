@@ -3,9 +3,11 @@
 This script:
 1. Splits merged cleaned data by period (Year, Month)
 2. Maps each period to its corresponding Google Sheet
-3. Replaces existing tabs (or creates if doesn't exist)
-4. Handles rate limiting with delays between API calls
-5. Uploads all periods (2020-2025) in one run
+3. Prepares data for upload (moves Ngày to first position, drops Năm/Tháng columns)
+4. All columns are preserved as-is
+5. Replaces existing tabs (or creates if doesn't exist)
+6. Handles rate limiting with delays between API calls
+7. Uploads all periods (2020-2025) in one run
 
 New Tab Names (replacing if exists):
 - "Chi tiết nhập"     ← Chi tiết nhập*.csv (purchase)
@@ -32,7 +34,7 @@ from src.modules.google_api import (
     get_sheets_for_folder,
     load_manifest,
     save_manifest,
-    write_sheet_data,
+    upload_dataframe_to_sheet,
 )
 import tomllib
 
@@ -57,6 +59,34 @@ CLEANED_FILE_TO_TAB = {
 # ============================================================================
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# VALIDATION FUNCTIONS
+# ============================================================================
+
+
+def validate_years(years_str: str) -> List[str]:
+    """Validate and parse comma-separated year list.
+
+    Args:
+        years_str: Comma-separated string of years (e.g., "2024,2025")
+
+    Returns:
+        List of validated 4-digit year strings
+
+    Raises:
+        ValueError: If any year is not a valid 4-digit year
+    """
+    years = [y.strip() for y in years_str.split(",")]
+
+    for year in years:
+        if not year.isdigit() or len(year) != 4:
+            raise ValueError(
+                f"Invalid year '{year}'. Years must be 4-digit numbers (e.g., 2024, 2025)"
+            )
+
+    return sorted(years)
+
 
 # ============================================================================
 # DATA PROCESSING FUNCTIONS
@@ -142,6 +172,69 @@ def load_cleaned_files(staging_dir: Path) -> Dict[str, Path]:
     return cleaned_files
 
 
+def get_raw_columns(df: pd.DataFrame, tab_name: str) -> List[int]:
+    """Identify columns that should use RAW input to preserve formatting.
+
+    Mã hàng (product code) uses RAW to preserve leading zeros.
+    All other columns use USER_ENTERED for proper numeric parsing.
+
+    Args:
+        df: DataFrame being uploaded.
+        tab_name: Name of the sheet tab.
+
+    Returns:
+        List of column indices (0-based) to upload as RAW.
+    """
+    raw_columns = []
+
+    for idx, col in enumerate(df.columns):
+        if col == "Mã hàng":
+            raw_columns.append(idx)
+
+    return raw_columns
+
+
+def prepare_df_for_upload(df: pd.DataFrame, file_type: str) -> pd.DataFrame:
+    """Prepare DataFrame for upload by reconfiguring columns.
+
+    This function:
+    1. Moves 'Ngày' column to first position (if exists)
+    2. Drops 'Năm' and 'Tháng' columns (required for period splitting only)
+    3. Cleans product names (strip spaces, collapse multiple spaces)
+
+    Args:
+        df: DataFrame to prepare for upload.
+        file_type: Type of file being processed ('Chi tiết nhập', 'Chi tiết xuất',
+                  'xuat_nhap_ton', 'bao_cao_tai_chinh').
+
+    Returns:
+        DataFrame with columns reconfigured for upload.
+    """
+    df_copy = df.copy()
+
+    # Clean product names
+    if "Tên hàng" in df_copy.columns:
+        df_copy["Tên hàng"] = (
+            df_copy["Tên hàng"]
+            .astype(str)
+            .str.strip()
+            .str.replace(r"\s+", " ", regex=True)
+        )
+
+    if "Ngày" in df_copy.columns:
+        cols = df_copy.columns.tolist()
+        cols.insert(0, cols.pop(cols.index("Ngày")))
+        df_copy = df_copy[cols]
+
+    period_cols = ["Năm", "Tháng"]
+    df_copy = df_copy.drop(
+        columns=[c for c in period_cols if c in df_copy.columns], errors="ignore"
+    )
+
+    logger.info(f"  Prepared {len(df_copy)} rows with columns: {list(df_copy.columns)}")
+
+    return df_copy
+
 def upload_to_spreadsheet(
     sheets_service,
     spreadsheet_id: str,
@@ -149,7 +242,11 @@ def upload_to_spreadsheet(
     df: pd.DataFrame,
     dry_run: bool = False,
 ) -> bool:
-    """Upload DataFrame to Google Sheet using write_sheet_data wrapper.
+    """Upload DataFrame to Google Sheet preserving data types.
+
+    Uses upload_dataframe_to_sheet with:
+    - RAW mode for Mã hàng to preserve leading zeros
+    - USER_ENTERED for other columns to parse numeric values correctly
 
     Args:
         sheets_service: Google Sheets API service object.
@@ -161,21 +258,27 @@ def upload_to_spreadsheet(
     Returns:
         True if successful (or dry run), False otherwise.
     """
+    # Get columns that need RAW input (preserve exact formatting)
+    raw_columns = get_raw_columns(df, tab_name)
+
     if dry_run:
         logger.info(
             f"[DRY RUN] Would upload to {tab_name} in spreadsheet {spreadsheet_id}"
         )
         logger.info(f"[DRY RUN]   Rows: {len(df)}, Columns: {len(df.columns)}")
+        logger.info(f"[DRY RUN]   Raw columns (preserve text): {raw_columns}")
         return True
 
-    # Convert all values to strings, preserving empty values as empty strings
-    values = [df.columns.tolist()]
-    for _, row in df.iterrows():
-        row_values = ["" if pd.isna(v) else str(v) for v in row]
-        values.append(row_values)
-
     logger.info(f"Writing {len(df)} rows to '{tab_name}'...")
-    success = write_sheet_data(sheets_service, spreadsheet_id, tab_name, values)
+    logger.info(f"  Raw columns (preserve text): {raw_columns}")
+
+    success = upload_dataframe_to_sheet(
+        sheets_service,
+        spreadsheet_id,
+        tab_name,
+        df,
+        raw_columns=raw_columns if raw_columns else None,
+    )
 
     if success:
         logger.info(f"Uploaded {len(df)} rows to '{tab_name}'")
@@ -193,11 +296,14 @@ def upload_to_spreadsheet(
 def upload_all_periods(
     staging_dir: Path,
     dry_run: bool = False,
+    years_filter: Optional[List[str]] = None,
 ) -> Tuple[int, int]:
     logger.info("=" * 70)
     logger.info("UPLOADING CLEANED DATA FOR ALL PERIODS")
     if dry_run:
         logger.info("MODE: DRY RUN")
+    if years_filter:
+        logger.info(f"YEAR FILTER: {', '.join(years_filter)}")
     logger.info("=" * 70)
 
     try:
@@ -235,7 +341,8 @@ def upload_all_periods(
         logger.info("=" * 70)
 
         try:
-            df = pd.read_csv(filepath)
+            # Read CSV with dtype to preserve Mã hàng as string (leading zeros)
+            df = pd.read_csv(filepath, dtype={"Mã hàng": str})
         except Exception as e:
             logger.error(f"Failed to load {filepath.name}: {e}")
             continue
@@ -251,7 +358,24 @@ def upload_all_periods(
             logger.warning("No periods found, skipping this file")
             continue
 
-        logger.info(f"Found {len(period_dfs)} periods: {sorted(period_dfs.keys())}")
+        if years_filter:
+            original_count = len(period_dfs)
+            period_dfs = {
+                period: df
+                for period, df in period_dfs.items()
+                if any(period.startswith(f"{year}_") for year in years_filter)
+            }
+            filtered_count = len(period_dfs)
+            if filtered_count == 0:
+                logger.warning(
+                    f"No periods found for years {', '.join(years_filter)}, skipping this file"
+                )
+                continue
+            logger.info(
+                f"Filtered to {filtered_count} periods (from {original_count}) for years {', '.join(years_filter)}"
+            )
+        else:
+            logger.info(f"Found {len(period_dfs)} periods: {sorted(period_dfs.keys())}")
 
         for period in sorted(period_dfs.keys()):
             period_df = period_dfs[period]
@@ -275,6 +399,8 @@ def upload_all_periods(
             logger.info(f"Tab: '{tab_name}'")
             logger.info(f"Sheet ID: {spreadsheet_id}")
             logger.info(f"Rows: {len(period_df)}")
+
+            period_df = prepare_df_for_upload(period_df, file_type)
 
             if upload_to_spreadsheet(
                 sheets_service,
@@ -319,18 +445,48 @@ if __name__ == "__main__":
     )
 
     parser = argparse.ArgumentParser(
-        description="Upload cleaned data to Google Sheets for ALL periods"
+        description="Upload cleaned data to Google Sheets for ALL periods",
+        epilog="""
+Examples:
+  # Upload all periods
+  uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py
+
+  # Upload only 2025 data
+  uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2025
+
+  # Upload multiple years
+  uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2024,2025
+
+  # Dry run for specific year
+  uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2025 --dry-run
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview uploads without actually modifying Google Sheets",
     )
+    parser.add_argument(
+        "--year",
+        type=str,
+        help="Filter uploads to specific year(s). Comma-separated for multiple years (e.g., 2025 or 2024,2025). Years must be 4-digit numbers.",
+    )
 
     args = parser.parse_args()
 
+    years_filter = None
+    if args.year:
+        try:
+            years_filter = validate_years(args.year)
+        except ValueError as e:
+            logger.error(f"Invalid year argument: {e}")
+            sys.exit(1)
+
     staging_dir = Path.cwd() / "data" / "01-staging" / "import_export"
 
-    total, success = upload_all_periods(staging_dir, dry_run=args.dry_run)
+    total, success = upload_all_periods(
+        staging_dir, dry_run=args.dry_run, years_filter=years_filter
+    )
 
     sys.exit(0 if success == total else 1)

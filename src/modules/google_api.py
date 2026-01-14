@@ -519,12 +519,14 @@ def upload_dataframe_to_sheet(
             if raw_columns:
                 for raw_col_idx in raw_columns:
                     col_letter = chr(65 + raw_col_idx)
+                    col_name = df.columns[raw_col_idx]
                     col_data = df.iloc[:, raw_col_idx].astype(str).tolist()
-                    col_values = [[v] for v in col_data]
+                    # Prepend header row
+                    col_values = [[col_name]] + [[v] for v in col_data]
 
                     sheets_service.spreadsheets().values().update(
                         spreadsheetId=spreadsheet_id,
-                        range=f"'{sheet_name}'!{col_letter}2:{col_letter}",
+                        range=f"'{sheet_name}'!{col_letter}1:{col_letter}",
                         valueInputOption="RAW",
                         body={"values": col_values},
                     ).execute()
@@ -540,6 +542,7 @@ def upload_dataframe_to_sheet(
                         col_data = (
                             df.iloc[:, non_raw_col_idx]
                             .astype(object)
+                            .infer_objects(copy=False)
                             .fillna("")
                             .tolist()
                         )
@@ -553,9 +556,9 @@ def upload_dataframe_to_sheet(
                         ).execute()
                         time.sleep(API_CALL_DELAY)
             else:
-                values = [df.columns.tolist()] + df.astype(object).fillna(
-                    ""
-                ).values.tolist()
+                values = [df.columns.tolist()] + df.astype(object).infer_objects(
+                    copy=False
+                ).fillna("").values.tolist()
 
                 sheets_service.spreadsheets().values().update(
                     spreadsheetId=spreadsheet_id,

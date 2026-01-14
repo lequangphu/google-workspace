@@ -793,7 +793,7 @@ def transform_purchase_receipts(
     )
 
     # Step 9: Clean product names (Phase 1 & 2)
-    from src.modules.import_export_receipts.clean_product_names import (
+    from src.modules.import_export_receipts.clean_product_names_core import (
         clean_product_name,
         standardize_product_type,
     )
@@ -839,6 +839,12 @@ def transform_purchase_receipts(
     # Intentional: Replace original Tên hàng with cleaned version after disambiguation.
     # The original uncleaned names are no longer needed - all downstream processing
     # uses the standardized, cleaned names for consistency.
+    # Drop original "Tên hàng" before renaming to avoid duplicate columns
+    if (
+        "Tên hàng" in final_combined_df.columns
+        and "Tên hàng_clean" in final_combined_df.columns
+    ):
+        final_combined_df = final_combined_df.drop(columns=["Tên hàng"])
     final_combined_df = final_combined_df.rename(columns={"Tên hàng_clean": "Tên hàng"})
 
     # Step 10: Standardize column types

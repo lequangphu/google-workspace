@@ -65,22 +65,78 @@ CONFIG = {
         "CHI_PHÍ_TIỀN": "Thành tiền chi phí",
         "NGÀY": "Ngày",
     },
-    "numeric_cols": [
-        "Số lượng đầu kỳ",
+    "columns_to_drop_from_output": [
         "Đơn giá đầu kỳ",
-        "Thành tiền đầu kỳ",
-        "Số lượng nhập trong kỳ",
         "Đơn giá nhập trong kỳ",
-        "Thành tiền nhập trong kỳ",
-        "Số lượng xuất trong kỳ",
         "Đơn giá xuất trong kỳ",
-        "Thành tiền xuất trong kỳ",
-        "Số lượng cuối kỳ",
         "Đơn giá cuối kỳ",
-        "Thành tiền cuối kỳ",
+        "Biên lãi gộp",
+    ],
+}
+    "columns_to_convert": [
+        "TỒN_ĐẦU_KỲ_Đ_GIÁ",
+        "TỒN_CUỐI_KỲ_THÀNH_TIỀN",
+        "TỒN_CUỐI_KỲ_DOANH_THU",
+        "TỒN_CUỐI_KỲ_LÃI_GỘP",
+        "CHI_PHÍ_TIỀN",
+    ],
+    "column_rename_map": {
+        "Mã_SP": "Mã hàng",
+        "TÊN_HÀNG": "Tên hàng",
+        "TỒN_ĐẦU_KỲ_S_LƯỢNG": "Số lượng đầu kỳ",
+        "TỒN_ĐẦU_KỲ_Đ_GIÁ": "Đơn giá đầu kỳ",
+        "TỒN_ĐẦU_KỲ_THÀNH_TIỀN": "Thành tiền đầu kỳ",
+        "NHẬP_TRONG_KỲ_S_LƯỢNG": "Số lượng nhập trong kỳ",
+        "NHẬP_TRONG_KỲ_Đ_GIÁ": "Đơn giá nhập trong kỳ",
+        "NHẬP_TRONG_KỲ_THÀNH_TIỀN": "Thành tiền nhập trong kỳ",
+        "XUẤT_TRONG_KỲ_SỐ_LƯỢNG": "Số lượng xuất trong kỳ",
+        "XUẤT_TRONG_KỲ": "Xuất trong kỳ",
+        "XUẤT_TRONG_KỲ_Đ_GIÁ": "Đơn giá xuất trong kỳ",
+        "XUẤT_TRONG_KỲ_THÀNH_TIỀN": "Thành tiền xuất trong kỳ",
+        "TỒN_CUỐI_KỲ_S_LƯỢNG": "Số lượng cuối kỳ",
+        "TỒN_CUỐI_KỲ_Đ_GIÁ": "Đơn giá cuối kỳ",
+        "TỒN_CUỐI_KỲ_THÀNH_TIỀN": "Thành tiền cuối kỳ",
+        "TỒN_CUỐI_KỲ_DOANH_THU": "Doanh thu cuối kỳ",
+        "TỒN_CUỐI_KỲ_LÃI_GỘP": "Lãi gộp cuối kỳ",
+        "CHI_PHÍ_DIỄN_GIẢI": "Tên chi phí",
+        "CHI_PHÍ_TIỀN": "Thành tiền chi phí",
+        "NGÀY": "Ngày",
+    },
+    "numeric_cols": [
+        "Tồn đầu kỳ",
+        "Giá trị đầu kỳ",
+        "Số lượng nhập",
+        "Giá trị nhập",
+        "Số lượng xuất",
+        "Giá trị xuất",
+        "Tồn cuối kỳ",
+        "Giá trị cuối kỳ",
         "Doanh thu cuối kỳ",
-        "Lãi gộp cuối kỳ",
-        "Thành tiền chi phí",
+        "Thành tiền",
+    ],
+    "columns_to_drop_from_output": [
+        "Đơn giá đầu kỳ",
+        "Đơn giá nhập trong kỳ",
+        "Đơn giá xuất trong kỳ",
+        "Đơn giá cuối kỳ",
+        "Biên lãi gộp",
+    ],
+    "column_rename_final": {
+        "Số lượng đầu kỳ": "Tồn đầu kỳ",
+        "Số lượng cuối kỳ": "Tồn cuối kỳ",
+        "Thành tiền đầu kỳ": "Giá trị đầu kỳ",
+        "Thành tiền cuối kỳ": "Giá trị cuối kỳ",
+        "Số lượng nhập trong kỳ": "Số lượng nhập",
+        "Thành tiền nhập trong kỳ": "Giá trị nhập",
+        "Số lượng xuất trong kỳ": "Số lượng xuất",
+        "Thành tiền xuất trong kỳ": "Giá trị xuất",
+        "Thành tiền chi phí": "Thành tiền"
+    },
+    "columns_to_drop_from_output": [
+        "Đơn giá đầu kỳ",
+        "Đơn giá nhập trong kỳ",
+        "Đơn giá xuất trong kỳ",
+        "Đơn giá cuối kỳ",
         "Biên lãi gộp",
     ],
 }
@@ -497,26 +553,17 @@ def merge_and_refine(consolidated_dataframes: Dict[str, pd.DataFrame]) -> pd.Dat
     # Rename columns
     final_df = final_df.rename(columns=CONFIG["column_rename_map"])
 
-    # Calculate profit margin
-    if (
-        "Lãi gộp cuối kỳ" in final_df.columns
-        and "Doanh thu cuối kỳ" in final_df.columns
-    ):
-        revenue = final_df["Doanh thu cuối kỳ"]
-        margin = final_df["Lãi gộp cuối kỳ"]
-        valid_revenue = (pd.notna(revenue)) & (revenue != 0)
-        final_df.loc[valid_revenue, "Biên lãi gộp"] = (
-            margin[valid_revenue] / revenue[valid_revenue]
-        )
-        final_df.loc[~valid_revenue, "Biên lãi gộp"] = pd.NA
-
     # Drop redundant column
     if "Xuất trong kỳ" in final_df.columns:
         final_df = final_df.drop(columns=["Xuất trong kỳ"])
         logger.info("Dropped redundant 'Xuất trong kỳ' column")
 
     # Drop rows with no inventory
-    so_luong_cols = [col for col in final_df.columns if col.startswith("Số lượng")]
+    so_luong_cols = [
+        col
+        for col in final_df.columns
+        if col.startswith("Số lượng") or col.startswith("Tồn")
+    ]
     if so_luong_cols:
         for col in so_luong_cols:
             final_df[col] = pd.to_numeric(final_df[col], errors="coerce")
@@ -528,6 +575,21 @@ def merge_and_refine(consolidated_dataframes: Dict[str, pd.DataFrame]) -> pd.Dat
         final_df = final_df[~mask_empty]
         if rows_dropped > 0:
             logger.info(f"Dropped {rows_dropped} rows with no inventory")
+
+    columns_to_drop = CONFIG.get("columns_to_drop_from_output", [])
+    columns_to_drop_existing = [
+        col for col in columns_to_drop if col in final_df.columns
+    ]
+    if columns_to_drop_existing:
+        final_df = final_df.drop(columns=columns_to_drop_existing)
+        logger.info(
+            f"Dropped {len(columns_to_drop_existing)} columns from output: {columns_to_drop_existing}"
+        )
+
+    column_rename_map = CONFIG.get("column_rename_final", {})
+    if column_rename_map:
+        final_df = final_df.rename(columns=column_rename_map)
+        logger.info(f"Renamed columns: {column_rename_map}")
 
     return final_df
 
