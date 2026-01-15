@@ -16,14 +16,10 @@ This script:
 7. Standardizes columns and exports cleaned data to data/01-staging/
 """
 
-import csv
-import json
 import logging
 import re
-from collections import defaultdict
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -507,108 +503,6 @@ def generate_output_filename(df: pd.DataFrame) -> str:
     return filename
 
 
-def create_reconciliation_checkpoint(
-    input_dir: Path,
-    output_filepath: Path,
-    script_name: str = "clean_receipts_sale",
-) -> Dict[str, Any]:
-    """Reconcile input vs output quantities with detailed breakdown.
-
-    Args:
-        input_dir: Path to raw import_export directory
-        output_filepath: Path to output CSV file
-        script_name: Name of script for report identification
-
-    Returns:
-        dict: Reconciliation report with input/output/dropout by file
-    """
-    # Step 1: Calculate INPUT totals from raw files
-    input_totals = defaultdict(float)
-    input_row_counts = defaultdict(int)
-
-    for csv_file in input_dir.glob("*CT.XUAT.csv"):
-        try:
-            with open(csv_file, "r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-
-            # Skip header rows (first 5 rows)
-            for row_idx, row in enumerate(rows[5:], start=1):
-                # Count rows and sum quantities (approximate scan)
-                input_row_counts[csv_file.name] += 1
-                if len(row) > 8:  # Quantity typically in column 8+
-                    try:
-                        qty = float(row[8]) if row[8] else 0
-                        input_totals[csv_file.name] += qty
-                    except ValueError:
-                        pass
-        except Exception as e:
-            logger.warning(f"Error reading {csv_file.name} for reconciliation: {e}")
-
-    # Step 2: Calculate OUTPUT totals from staging file
-    output_df = pd.read_csv(output_filepath)
-    output_total_qty = (
-        output_df["Số lượng"].sum() if "Số lượng" in output_df.columns else 0
-    )
-    output_row_count = len(output_df)
-
-    # Step 3: Build reconciliation report
-    total_input_qty = sum(input_totals.values())
-    total_input_rows = sum(input_row_counts.values())
-
-    report = {
-        "timestamp": datetime.now().isoformat(),
-        "script": script_name,
-        "input": {
-            "total_quantity": float(total_input_qty),
-            "total_rows": int(total_input_rows),
-        },
-        "output": {
-            "total_quantity": float(output_total_qty),
-            "total_rows": int(output_row_count),
-        },
-        "reconciliation": {
-            "quantity_dropout_pct": (
-                (total_input_qty - output_total_qty) / total_input_qty * 100
-                if total_input_qty > 0
-                else 0
-            ),
-            "row_dropout_pct": (
-                (total_input_rows - output_row_count) / total_input_rows * 100
-                if total_input_rows > 0
-                else 0
-            ),
-        },
-        "alerts": [],
-    }
-
-    # Step 5: Flag issues
-    if report["reconciliation"]["quantity_dropout_pct"] > 5:
-        report["alerts"].append(
-            f"⚠️ WARNING: {report['reconciliation']['quantity_dropout_pct']:.1f}% "
-            f"quantity dropped ({total_input_qty:,.0f} → {output_total_qty:,.0f})"
-        )
-
-    # Step 6: Save reconciliation report
-    report_filename = f"reconciliation_report_{script_name}.json"
-    report_path = output_filepath.parent / report_filename
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
-
-    # Step 7: Log report
-    logger.info("=" * 70)
-    logger.info(f"RECONCILIATION REPORT ({script_name})")
-    logger.info(f"Input:  {total_input_qty:,.0f} qty across {total_input_rows:,} rows")
-    logger.info(f"Output: {output_total_qty:,.0f} qty across {output_row_count:,} rows")
-    logger.info(f"Dropout: {report['reconciliation']['quantity_dropout_pct']:.1f}%")
-    logger.info(f"Report saved to: {report_filename}")
-    for alert in report["alerts"]:
-        logger.warning(alert)
-    logger.info("=" * 70)
-
-    return report
-
-
 # ============================================================================
 # MAIN PIPELINE FUNCTION
 # ============================================================================
@@ -713,26 +607,5 @@ def transform_sale_receipts(
     final_df.to_csv(output_filepath, index=False, encoding="utf-8")
     logger.info(f"Saved to: {output_filepath}")
     logger.info(f"Rows: {len(final_df)}, Columns: {len(final_df.columns)}")
-
-    # Create summary dataframe (aggregate by Tháng, Năm)
-    logger.info("=" * 70)
-    logger.info("Creating summary aggregation by month/year")
-    summary_df = final_df.groupby(["Tháng", "Năm"], as_index=False).agg(
-        {"Số lượng": "sum", "Thành tiền": "sum"}
-    )
-
-    # Reorder columns
-    summary_df = summary_df[["Năm", "Tháng", "Số lượng", "Thành tiền"]]
-
-    # Generate summary filename
-    summary_filename = output_filename.replace("Chi tiết xuất", "Tổng hợp xuất")
-    summary_filepath = output_dir / summary_filename
-    summary_df.to_csv(summary_filepath, index=False, encoding="utf-8")
-    logger.info(f"Saved summary to: {summary_filepath}")
-    logger.info(f"Summary rows: {len(summary_df)}, Columns: {len(summary_df.columns)}")
-    logger.info("=" * 70)
-
-    # Reconciliation check
-    create_reconciliation_checkpoint(input_dir, output_filepath, "clean_receipts_sale")
 
     return output_filepath

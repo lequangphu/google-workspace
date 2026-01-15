@@ -15,13 +15,10 @@ Raw source: Inventory files (Xuất Nhập Tồn) from KiotViet
 """
 
 import csv
-import json
 import logging
 import re
-from collections import defaultdict
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from tqdm import tqdm
@@ -46,60 +43,23 @@ CONFIG = {
     "column_rename_map": {
         "Mã_SP": "Mã hàng",
         "TÊN_HÀNG": "Tên hàng",
-        "TỒN_ĐẦU_KỲ_S_LƯỢNG": "Số lượng đầu kỳ",
+        "TỒN_ĐẦU_KỲ_S_LƯỢNG": "Tồn đầu kỳ",
         "TỒN_ĐẦU_KỲ_Đ_GIÁ": "Đơn giá đầu kỳ",
-        "TỒN_ĐẦU_KỲ_THÀNH_TIỀN": "Thành tiền đầu kỳ",
-        "NHẬP_TRONG_KỲ_S_LƯỢNG": "Số lượng nhập trong kỳ",
+        "TỒN_ĐẦU_KỲ_THÀNH_TIỀN": "Giá trị đầu kỳ",
+        "NHẬP_TRONG_KỲ_S_LƯỢNG": "Số lượng nhập",
         "NHẬP_TRONG_KỲ_Đ_GIÁ": "Đơn giá nhập trong kỳ",
-        "NHẬP_TRONG_KỲ_THÀNH_TIỀN": "Thành tiền nhập trong kỳ",
-        "XUẤT_TRONG_KỲ_SỐ_LƯỢNG": "Số lượng xuất trong kỳ",
+        "NHẬP_TRONG_KỲ_THÀNH_TIỀN": "Giá trị nhập",
+        "XUẤT_TRONG_KỲ_SỐ_LƯỢNG": "Số lượng xuất",
         "XUẤT_TRONG_KỲ": "Xuất trong kỳ",
         "XUẤT_TRONG_KỲ_Đ_GIÁ": "Đơn giá xuất trong kỳ",
-        "XUẤT_TRONG_KỲ_THÀNH_TIỀN": "Thành tiền xuất trong kỳ",
-        "TỒN_CUỐI_KỲ_S_LƯỢNG": "Số lượng cuối kỳ",
+        "XUẤT_TRONG_KỲ_THÀNH_TIỀN": "Giá trị xuất",
+        "TỒN_CUỐI_KỲ_S_LƯỢNG": "Tồn cuối kỳ",
         "TỒN_CUỐI_KỲ_Đ_GIÁ": "Đơn giá cuối kỳ",
-        "TỒN_CUỐI_KỲ_THÀNH_TIỀN": "Thành tiền cuối kỳ",
+        "TỒN_CUỐI_KỲ_THÀNH_TIỀN": "Giá trị cuối kỳ",
         "TỒN_CUỐI_KỲ_DOANH_THU": "Doanh thu cuối kỳ",
         "TỒN_CUỐI_KỲ_LÃI_GỘP": "Lãi gộp cuối kỳ",
         "CHI_PHÍ_DIỄN_GIẢI": "Tên chi phí",
-        "CHI_PHÍ_TIỀN": "Thành tiền chi phí",
-        "NGÀY": "Ngày",
-    },
-    "columns_to_drop_from_output": [
-        "Đơn giá đầu kỳ",
-        "Đơn giá nhập trong kỳ",
-        "Đơn giá xuất trong kỳ",
-        "Đơn giá cuối kỳ",
-        "Biên lãi gộp",
-    ],
-}
-    "columns_to_convert": [
-        "TỒN_ĐẦU_KỲ_Đ_GIÁ",
-        "TỒN_CUỐI_KỲ_THÀNH_TIỀN",
-        "TỒN_CUỐI_KỲ_DOANH_THU",
-        "TỒN_CUỐI_KỲ_LÃI_GỘP",
-        "CHI_PHÍ_TIỀN",
-    ],
-    "column_rename_map": {
-        "Mã_SP": "Mã hàng",
-        "TÊN_HÀNG": "Tên hàng",
-        "TỒN_ĐẦU_KỲ_S_LƯỢNG": "Số lượng đầu kỳ",
-        "TỒN_ĐẦU_KỲ_Đ_GIÁ": "Đơn giá đầu kỳ",
-        "TỒN_ĐẦU_KỲ_THÀNH_TIỀN": "Thành tiền đầu kỳ",
-        "NHẬP_TRONG_KỲ_S_LƯỢNG": "Số lượng nhập trong kỳ",
-        "NHẬP_TRONG_KỲ_Đ_GIÁ": "Đơn giá nhập trong kỳ",
-        "NHẬP_TRONG_KỲ_THÀNH_TIỀN": "Thành tiền nhập trong kỳ",
-        "XUẤT_TRONG_KỲ_SỐ_LƯỢNG": "Số lượng xuất trong kỳ",
-        "XUẤT_TRONG_KỲ": "Xuất trong kỳ",
-        "XUẤT_TRONG_KỲ_Đ_GIÁ": "Đơn giá xuất trong kỳ",
-        "XUẤT_TRONG_KỲ_THÀNH_TIỀN": "Thành tiền xuất trong kỳ",
-        "TỒN_CUỐI_KỲ_S_LƯỢNG": "Số lượng cuối kỳ",
-        "TỒN_CUỐI_KỲ_Đ_GIÁ": "Đơn giá cuối kỳ",
-        "TỒN_CUỐI_KỲ_THÀNH_TIỀN": "Thành tiền cuối kỳ",
-        "TỒN_CUỐI_KỲ_DOANH_THU": "Doanh thu cuối kỳ",
-        "TỒN_CUỐI_KỲ_LÃI_GỘP": "Lãi gộp cuối kỳ",
-        "CHI_PHÍ_DIỄN_GIẢI": "Tên chi phí",
-        "CHI_PHÍ_TIỀN": "Thành tiền chi phí",
+        "CHI_PHÍ_TIỀN": "Thành tiền",
         "NGÀY": "Ngày",
     },
     "numeric_cols": [
@@ -112,26 +72,9 @@ CONFIG = {
         "Tồn cuối kỳ",
         "Giá trị cuối kỳ",
         "Doanh thu cuối kỳ",
+        "Lãi gộp cuối kỳ",
         "Thành tiền",
     ],
-    "columns_to_drop_from_output": [
-        "Đơn giá đầu kỳ",
-        "Đơn giá nhập trong kỳ",
-        "Đơn giá xuất trong kỳ",
-        "Đơn giá cuối kỳ",
-        "Biên lãi gộp",
-    ],
-    "column_rename_final": {
-        "Số lượng đầu kỳ": "Tồn đầu kỳ",
-        "Số lượng cuối kỳ": "Tồn cuối kỳ",
-        "Thành tiền đầu kỳ": "Giá trị đầu kỳ",
-        "Thành tiền cuối kỳ": "Giá trị cuối kỳ",
-        "Số lượng nhập trong kỳ": "Số lượng nhập",
-        "Thành tiền nhập trong kỳ": "Giá trị nhập",
-        "Số lượng xuất trong kỳ": "Số lượng xuất",
-        "Thành tiền xuất trong kỳ": "Giá trị xuất",
-        "Thành tiền chi phí": "Thành tiền"
-    },
     "columns_to_drop_from_output": [
         "Đơn giá đầu kỳ",
         "Đơn giá nhập trong kỳ",
@@ -346,7 +289,6 @@ def load_and_process_group(
                 header=None,
                 encoding="utf-8",
                 engine="python",
-                on_bad_lines="skip",
             )
 
             # Align columns with header
@@ -417,22 +359,10 @@ def clean_data(
         Dict of cleaned DataFrames with statistics
     """
     stats = {
-        "rows_dropped_empty_code": 0,
         "columns_dropped": {},
-        "rows_dropped_empty_qty": 0,
     }
 
     for group_name, df in list(consolidated_dataframes.items()):
-        # Drop rows with empty product codes
-        if "Mã_SP" in df.columns:
-            df["Mã_SP"] = df["Mã_SP"].astype(str)
-            rows_before = len(df)
-            df_cleaned = df[df["Mã_SP"].str.strip() != ""]
-            df_cleaned = df_cleaned[df_cleaned["Mã_SP"] != "nan"]
-            rows_dropped = rows_before - len(df_cleaned)
-            stats["rows_dropped_empty_code"] += rows_dropped
-            consolidated_dataframes[group_name] = df_cleaned
-
         df = consolidated_dataframes[group_name]
 
         # Drop columns with low non-null coverage
@@ -449,12 +379,29 @@ def clean_data(
             stats["columns_dropped"][group_name] = columns_to_drop
             consolidated_dataframes[group_name] = df.drop(columns=columns_to_drop)
 
-    logger.info(
-        f"Dropped {stats['rows_dropped_empty_code']} rows with empty product codes"
-    )
     logger.info(f"Dropped columns from {len(stats['columns_dropped'])} group(s)")
 
     return consolidated_dataframes
+
+
+def fill_null_values_final(final_df: pd.DataFrame) -> pd.DataFrame:
+    numeric_cols = CONFIG.get("numeric_cols", [])
+    total_filled = 0
+
+    for col in numeric_cols:
+        if col not in final_df.columns:
+            continue
+
+        null_count = final_df[col].isna().sum()
+        if null_count > 0:
+            final_df[col] = final_df[col].fillna(0)
+            logger.info(f"Filled {null_count} null values in {col}")
+            total_filled += null_count
+
+    if total_filled > 0:
+        logger.info(f"Total null values filled: {total_filled}")
+
+    return final_df
 
 
 def extract_cost_data(consolidated_dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -558,23 +505,33 @@ def merge_and_refine(consolidated_dataframes: Dict[str, pd.DataFrame]) -> pd.Dat
         final_df = final_df.drop(columns=["Xuất trong kỳ"])
         logger.info("Dropped redundant 'Xuất trong kỳ' column")
 
-    # Drop rows with no inventory
-    so_luong_cols = [
-        col
-        for col in final_df.columns
-        if col.startswith("Số lượng") or col.startswith("Tồn")
-    ]
-    if so_luong_cols:
-        for col in so_luong_cols:
-            final_df[col] = pd.to_numeric(final_df[col], errors="coerce")
+    final_df = fill_null_values_final(final_df)
 
-        mask_empty = final_df[so_luong_cols].isna().all(axis=1) | (
-            final_df[so_luong_cols] == 0
-        ).all(axis=1)
-        rows_dropped = mask_empty.sum()
-        final_df = final_df[~mask_empty]
+    if "Mã hàng" in final_df.columns:
+        rows_before = len(final_df)
+        final_df = final_df.dropna(subset=["Mã hàng"])
+        rows_dropped = rows_before - len(final_df)
         if rows_dropped > 0:
-            logger.info(f"Dropped {rows_dropped} rows with no inventory")
+            logger.info(f"Dropped {rows_dropped} rows with NaN in Mã hàng")
+
+    activity_cols = []
+    for col in final_df.columns:
+        col_lower = col.lower()
+        if "tồn đầu kỳ" in col_lower or "tồn cuối kỳ" in col_lower:
+            activity_cols.append(col)
+        elif "nhập" in col_lower and "số lượng" in col_lower:
+            activity_cols.append(col)
+        elif "xuất" in col_lower and "số lượng" in col_lower:
+            activity_cols.append(col)
+
+    if activity_cols:
+        mask_zero_activity = (final_df[activity_cols] == 0).all(axis=1)
+        rows_dropped = mask_zero_activity.sum()
+        final_df = final_df[~mask_zero_activity]
+        if rows_dropped > 0:
+            logger.info(
+                f"Dropped {rows_dropped} rows with zero in all opening, closing, import, export columns"
+            )
 
     columns_to_drop = CONFIG.get("columns_to_drop_from_output", [])
     columns_to_drop_existing = [
@@ -585,11 +542,6 @@ def merge_and_refine(consolidated_dataframes: Dict[str, pd.DataFrame]) -> pd.Dat
         logger.info(
             f"Dropped {len(columns_to_drop_existing)} columns from output: {columns_to_drop_existing}"
         )
-
-    column_rename_map = CONFIG.get("column_rename_final", {})
-    if column_rename_map:
-        final_df = final_df.rename(columns=column_rename_map)
-        logger.info(f"Renamed columns: {column_rename_map}")
 
     return final_df
 
@@ -633,85 +585,6 @@ def format_columns(final_df: pd.DataFrame) -> pd.DataFrame:
         final_df = final_df.sort_values(by=["Ngày", "Mã hàng"], na_position="last")
 
     return final_df
-
-
-def create_reconciliation_checkpoint(
-    input_dir: Path,
-    output_filepath: Path,
-    script_name: str = "clean_inventory",
-) -> Dict[str, Any]:
-    """Reconcile input vs output quantities with detailed breakdown.
-
-    Args:
-        input_dir: Path to raw import_export directory
-        output_filepath: Path to output CSV file
-        script_name: Name of script for report identification
-
-    Returns:
-        dict: Reconciliation report with input/output/dropout by file
-    """
-    # Step 1: Calculate INPUT totals from raw files
-    input_row_counts = defaultdict(int)
-
-    for csv_file in input_dir.glob("*XNT.csv"):
-        try:
-            with open(csv_file, "r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-
-            # Skip header rows (first 5 rows)
-            for row_idx, row in enumerate(rows[5:], start=1):
-                input_row_counts[csv_file.name] += 1
-                # Count rows
-        except Exception as e:
-            logger.warning(f"Error reading {csv_file.name} for reconciliation: {e}")
-
-    # Step 2: Calculate OUTPUT totals from staging file
-    output_df = pd.read_csv(output_filepath)
-    output_row_count = len(output_df)
-
-    # Step 3: Build reconciliation report
-    total_input_rows = sum(input_row_counts.values())
-
-    report = {
-        "timestamp": datetime.now().isoformat(),
-        "script": script_name,
-        "input": {
-            "total_rows": int(total_input_rows),
-        },
-        "output": {
-            "total_rows": int(output_row_count),
-        },
-        "reconciliation": {
-            "row_dropout_pct": (
-                (total_input_rows - output_row_count) / total_input_rows * 100
-                if total_input_rows > 0
-                else 0
-            ),
-        },
-        "alerts": [],
-    }
-
-    # Step 5: Flag issues
-
-    # Step 6: Save reconciliation report
-    report_filename = f"reconciliation_report_{script_name}.json"
-    report_path = output_filepath.parent / report_filename
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
-
-    # Step 7: Log report
-    logger.info("=" * 70)
-    logger.info(f"RECONCILIATION REPORT ({script_name})")
-    logger.info(f"Input:  {total_input_rows:,} rows")
-    logger.info(f"Output: {output_row_count:,} rows")
-    logger.info(f"Dropout: {report['reconciliation']['row_dropout_pct']:.1f}%")
-    logger.info(f"Report saved to: {report_filename}")
-    for alert in report["alerts"]:
-        logger.warning(alert)
-    logger.info("=" * 70)
-
-    return report
 
 
 def process(
@@ -803,8 +676,6 @@ def process(
                 logger.info(f"  {col}: {count} ({pct:.1f}%)")
 
         logger.info("=" * 70)
-
-        create_reconciliation_checkpoint(input_dir, output_filepath, "clean_inventory")
 
         financial_path = create_financial_report(cost_df, staging_dir)
         if financial_path:

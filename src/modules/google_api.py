@@ -539,13 +539,20 @@ def upload_dataframe_to_sheet(
                     for non_raw_col_idx in non_raw_cols:
                         col_letter = chr(65 + non_raw_col_idx)
                         col_name = df.columns[non_raw_col_idx]
-                        col_data = (
-                            df.iloc[:, non_raw_col_idx]
-                            .astype(object)
-                            .infer_objects(copy=False)
-                            .fillna("")
-                            .tolist()
-                        )
+                        col_series = df.iloc[:, non_raw_col_idx]
+
+                        is_numeric = pd.api.types.is_numeric_dtype(col_series)
+
+                        if is_numeric:
+                            col_data = col_series.fillna(0).tolist()
+                        else:
+                            col_data = (
+                                col_series.astype(object)
+                                .infer_objects(copy=False)
+                                .fillna("")
+                                .tolist()
+                            )
+
                         col_values = [[col_name]] + [[v] for v in col_data]
 
                         sheets_service.spreadsheets().values().update(
