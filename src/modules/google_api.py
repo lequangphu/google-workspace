@@ -297,32 +297,107 @@ def get_sheet_tabs(sheets_service, spreadsheet_id):
 
 
 def get_sheet_id_by_name(sheets_service, spreadsheet_id, sheet_name):
-    """Get sheet ID by sheet name.
+    """Get sheet ID by sheet name with retry logic.
 
     Args:
         sheets_service: Google Sheets API service object.
-        spreadsheet_id: ID of the spreadsheet.
+        spreadsheet_id: ID of spreadsheet.
         sheet_name: Name of the sheet tab.
 
     Returns:
         Sheet ID if found, None otherwise.
     """
-    try:
-        result = (
-            sheets_service.spreadsheets()
-            .get(
-                spreadsheetId=spreadsheet_id, fields="sheets.properties(sheetId,title))"
+    max_retries = 3
+
+    for attempt in range(max_retries):
+        try:
+            result = (
+                sheets_service.spreadsheets()
+                .get(
+                    spreadsheetId=spreadsheet_id,
+                    fields="sheets.properties(sheetId,title)",
+                )
+                .execute()
             )
-            .execute()
-        )
-        time.sleep(API_CALL_DELAY)
-        for sheet in result.get("sheets", []):
-            if sheet["properties"]["title"] == sheet_name:
-                return sheet["properties"]["sheetId"]
-        return None
-    except HttpError as e:
-        logger.error(f"Failed to get sheet ID for {sheet_name}: {e}")
-        return None
+            time.sleep(API_CALL_DELAY)
+            for sheet in result.get("sheets", []):
+                if sheet["properties"]["title"] == sheet_name:
+                    return sheet["properties"]["sheetId"]
+            return None
+        except HttpError as e:
+            if e.status_code == 429 and attempt < max_retries - 1:
+                wait_time = 2**attempt
+                logger.warning(
+                    f"Rate limited getting sheet ID for {sheet_name}, "
+                    f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})"
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(f"Failed to get sheet ID for {sheet_name}: {e}")
+                return None
+        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
+            wait_time = 2**attempt
+            logger.warning(
+                f"Timeout getting sheet ID for {sheet_name}, "
+                f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries}): {e}"
+            )
+            time.sleep(wait_time)
+
+    logger.error(f"Failed to get sheet ID for {sheet_name} after {max_retries} retries")
+    return None
+
+
+def get_sheet_name_by_id(sheets_service, spreadsheet_id, sheet_id):
+    """Get sheet name by sheet ID with retry logic.
+
+    Args:
+        sheets_service: Google Sheets API service object.
+        spreadsheet_id: ID of spreadsheet.
+        sheet_id: ID of sheet tab.
+
+    Returns:
+        Sheet name if found, None otherwise.
+    """
+    max_retries = 3
+
+    for attempt in range(max_retries):
+        try:
+            result = (
+                sheets_service.spreadsheets()
+                .get(
+                    spreadsheetId=spreadsheet_id,
+                    fields="sheets.properties(sheetId,title)",
+                )
+                .execute()
+            )
+            time.sleep(API_CALL_DELAY)
+            for sheet in result.get("sheets", []):
+                if sheet["properties"]["sheetId"] == sheet_id:
+                    return sheet["properties"]["title"]
+            return None
+        except HttpError as e:
+            if e.status_code == 429 and attempt < max_retries - 1:
+                wait_time = 2**attempt
+                logger.warning(
+                    f"Rate limited getting sheet name for ID {sheet_id}, "
+                    f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})"
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(f"Failed to get sheet name for ID {sheet_id}: {e}")
+                return None
+        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
+            wait_time = 2**attempt
+            logger.warning(
+                f"Timeout getting sheet name for ID {sheet_id}, "
+                f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries}): {e}"
+            )
+            time.sleep(wait_time)
+
+    logger.error(
+        f"Failed to get sheet name for ID {sheet_id} after {max_retries} retries"
+    )
+    return None
 
 
 def read_sheet_data(sheets_service, spreadsheet_id, sheet_name):
@@ -602,6 +677,153 @@ def upload_dataframe_to_sheet(
 
     logger.error(f"Failed to write sheet {sheet_name} after {max_retries} retries")
     return False
+
+
+def copy_sheet_to_spreadsheet(
+    sheets_service,
+    source_spreadsheet_id: str,
+    source_sheet_id: int,
+    destination_spreadsheet_id: str,
+    move_to_first: bool = False,
+) -> Optional[dict]:
+    """Copy a sheet from one spreadsheet to another, preserving formulas.
+
+    Uses the spreadsheets.sheets.copyTo API method which copies all sheet
+    properties including formulas, formatting, and conditional formatting.
+    Includes retry logic with exponential backoff for network timeouts.
+
+    Args:
+        sheets_service: Google Sheets API service object.
+        source_spreadsheet_id: ID of the source spreadsheet.
+        source_sheet_id: ID of the sheet to copy.
+        destination_spreadsheet_id: ID of the destination spreadsheet.
+        move_to_first: If True, move the copied sheet to the first position.
+
+    Returns:
+        Sheet properties of the newly created sheet if successful, None otherwise.
+    """
+    max_retries = 3
+
+    for attempt in range(max_retries):
+        try:
+            copy_request = {"destinationSpreadsheetId": destination_spreadsheet_id}
+
+            result = (
+                sheets_service.spreadsheets()
+                .sheets()
+                .copyTo(
+                    spreadsheetId=source_spreadsheet_id,
+                    sheetId=source_sheet_id,
+                    body=copy_request,
+                )
+                .execute()
+            )
+            time.sleep(API_CALL_DELAY)
+
+            new_sheet_id = result["sheetId"]
+            logger.info(
+                f"Copied sheet {source_sheet_id} from {source_spreadsheet_id} "
+                f"to {destination_spreadsheet_id} as new sheet {new_sheet_id}"
+            )
+
+            if move_to_first:
+                update_request = {
+                    "updateSheetProperties": {
+                        "properties": {"sheetId": new_sheet_id, "index": 0},
+                        "fields": "index",
+                    }
+                }
+                sheets_service.spreadsheets().batchUpdate(
+                    spreadsheetId=destination_spreadsheet_id,
+                    body={"requests": [update_request]},
+                ).execute()
+                time.sleep(API_CALL_DELAY)
+                logger.info(f"Moved sheet {new_sheet_id} to first position")
+
+            return result
+
+        except HttpError as e:
+            if e.status_code == 429 and attempt < max_retries - 1:
+                wait_time = 2**attempt
+                logger.warning(
+                    f"Rate limited copying sheet, retrying in {wait_time}s "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(
+                    f"Failed to copy sheet {source_sheet_id} to {destination_spreadsheet_id}: {e}"
+                )
+                return None
+        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
+            wait_time = 2**attempt
+            logger.warning(
+                f"Timeout copying sheet, retrying in {wait_time}s "
+                f"(attempt {attempt + 1}/{max_retries}): {e}"
+            )
+            time.sleep(wait_time)
+
+    logger.error(
+        f"Failed to copy sheet {source_sheet_id} to {destination_spreadsheet_id} "
+        f"after {max_retries} retries"
+    )
+    return None
+
+
+def rename_sheet(
+    sheets_service, spreadsheet_id: str, sheet_id: int, new_name: str
+) -> bool:
+    """Rename a sheet tab.
+
+    Args:
+        sheets_service: Google Sheets API service object.
+        spreadsheet_id: ID of the spreadsheet.
+        sheet_id: ID of the sheet to rename.
+        new_name: New name for the sheet.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    try:
+        update_request = {
+            "updateSheetProperties": {
+                "properties": {"sheetId": sheet_id, "title": new_name},
+                "fields": "title",
+            }
+        }
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id, body={"requests": [update_request]}
+        ).execute()
+        time.sleep(API_CALL_DELAY)
+        logger.info(f"Renamed sheet {sheet_id} to '{new_name}'")
+        return True
+    except HttpError as e:
+        logger.error(f"Failed to rename sheet {sheet_id} to '{new_name}': {e}")
+        return False
+
+
+def delete_sheet(sheets_service, spreadsheet_id: str, sheet_id: int) -> bool:
+    """Delete a sheet tab.
+
+    Args:
+        sheets_service: Google Sheets API service object.
+        spreadsheet_id: ID of the spreadsheet.
+        sheet_id: ID of the sheet to delete.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    try:
+        update_request = {"deleteSheet": {"sheetId": sheet_id}}
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id, body={"requests": [update_request]}
+        ).execute()
+        time.sleep(API_CALL_DELAY)
+        logger.info(f"Deleted sheet {sheet_id}")
+        return True
+    except HttpError as e:
+        logger.error(f"Failed to delete sheet {sheet_id}: {e}")
+        return False
 
 
 def export_tab_to_csv(

@@ -88,6 +88,38 @@ def validate_years(years_str: str) -> List[str]:
     return sorted(years)
 
 
+def validate_months(months_str: str) -> List[str]:
+    """Validate and parse comma-separated month list.
+
+    Args:
+        months_str: Comma-separated string of months (e.g., "1,2,12" or "01,02")
+
+    Returns:
+        List of validated 2-digit month strings (e.g., "01", "02", "12")
+
+    Raises:
+        ValueError: If any month is not a valid month (1-12)
+    """
+    months = [m.strip() for m in months_str.split(",")]
+
+    validated_months = []
+    for month in months:
+        if not month.isdigit():
+            raise ValueError(
+                f"Invalid month '{month}'. Months must be numbers (e.g., 1, 2, 12)"
+            )
+
+        month_num = int(month)
+        if month_num < 1 or month_num > 12:
+            raise ValueError(
+                f"Invalid month '{month}'. Months must be between 1 and 12 (e.g., 1, 2, 12)"
+            )
+
+        validated_months.append(f"{month_num:02d}")
+
+    return sorted(validated_months)
+
+
 # ============================================================================
 # DATA PROCESSING FUNCTIONS
 # ============================================================================
@@ -124,16 +156,26 @@ def split_cleaned_data_by_period(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
 def find_spreadsheet_for_period(
     period: str, sheets_metadata: List[Dict]
 ) -> Optional[str]:
+    """Find spreadsheet ID for a given period.
+
+    Matches spreadsheet name pattern: "Xuất Nhập Tồn YYYY-MM"
+
+    Args:
+        period: Period string in format "YYYY_MM" (e.g., "2023_01")
+        sheets_metadata: List of sheet metadata dicts from Drive API.
+
+    Returns:
+        Spreadsheet ID if found, None otherwise.
+    """
     year, month = period.split("_")
     month_num = int(month)
 
-    pattern = f"T{month_num:02d}.{year[-2:]}"
-    pattern_alt = f"T{month_num}.{year[-2:]}"
+    pattern = f"{year}-{month_num:02d}"
 
     for sheet in sheets_metadata:
         filename = sheet["name"]
 
-        if pattern in filename or pattern_alt in filename:
+        if pattern in filename:
             logger.debug(f"Matched period {period} -> file: {filename}")
             return sheet["id"]
 
@@ -235,6 +277,7 @@ def prepare_df_for_upload(df: pd.DataFrame, file_type: str) -> pd.DataFrame:
 
     return df_copy
 
+
 def upload_to_spreadsheet(
     sheets_service,
     spreadsheet_id: str,
@@ -297,6 +340,7 @@ def upload_all_periods(
     staging_dir: Path,
     dry_run: bool = False,
     years_filter: Optional[List[str]] = None,
+    months_filter: Optional[List[str]] = None,
 ) -> Tuple[int, int]:
     logger.info("=" * 70)
     logger.info("UPLOADING CLEANED DATA FOR ALL PERIODS")
@@ -304,6 +348,8 @@ def upload_all_periods(
         logger.info("MODE: DRY RUN")
     if years_filter:
         logger.info(f"YEAR FILTER: {', '.join(years_filter)}")
+    if months_filter:
+        logger.info(f"MONTH FILTER: {', '.join(months_filter)}")
     logger.info("=" * 70)
 
     try:
@@ -358,21 +404,42 @@ def upload_all_periods(
             logger.warning("No periods found, skipping this file")
             continue
 
-        if years_filter:
+        if years_filter or months_filter:
             original_count = len(period_dfs)
-            period_dfs = {
-                period: df
-                for period, df in period_dfs.items()
-                if any(period.startswith(f"{year}_") for year in years_filter)
-            }
+            filtered_periods = []
+
+            for period in period_dfs.keys():
+                period_year, period_month = period.split("_")
+
+                year_match = period_year in years_filter if years_filter else True
+
+                month_match = period_month in months_filter if months_filter else True
+
+                if year_match and month_match:
+                    filtered_periods.append(period)
+
+            period_dfs = {period: period_dfs[period] for period in filtered_periods}
             filtered_count = len(period_dfs)
+
             if filtered_count == 0:
+                filter_desc = []
+                if years_filter:
+                    filter_desc.append(f"years {', '.join(years_filter)}")
+                if months_filter:
+                    filter_desc.append(f"months {', '.join(months_filter)}")
                 logger.warning(
-                    f"No periods found for years {', '.join(years_filter)}, skipping this file"
+                    f"No periods found for {', '.join(filter_desc)}, skipping this file"
                 )
                 continue
+
+            filter_desc = []
+            if years_filter:
+                filter_desc.append(f"years {', '.join(years_filter)}")
+            if months_filter:
+                filter_desc.append(f"months {', '.join(months_filter)}")
+
             logger.info(
-                f"Filtered to {filtered_count} periods (from {original_count}) for years {', '.join(years_filter)}"
+                f"Filtered to {filtered_count} periods (from {original_count}) for {', '.join(filter_desc)}"
             )
         else:
             logger.info(f"Found {len(period_dfs)} periods: {sorted(period_dfs.keys())}")
@@ -447,18 +514,27 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Upload cleaned data to Google Sheets for ALL periods",
         epilog="""
-Examples:
-  # Upload all periods
-  uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py
+ Examples:
+   # Upload all periods
+   uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py
 
-  # Upload only 2025 data
-  uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2025
+   # Upload only 2025 data
+   uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2025
 
-  # Upload multiple years
-  uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2024,2025
+   # Upload multiple years
+   uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2024,2025
 
-  # Dry run for specific year
-  uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2025 --dry-run
+   # Upload only January 2025
+   uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2025 --month 1
+
+   # Upload January and February 2025
+   uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2025 --month 1,2
+
+   # Upload only January (all years)
+   uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --month 1
+
+   # Dry run for specific period
+   uv run src/modules/import_export_receipts/upload_cleaned_to_sheets.py --year 2025 --month 1 --dry-run
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -472,6 +548,11 @@ Examples:
         type=str,
         help="Filter uploads to specific year(s). Comma-separated for multiple years (e.g., 2025 or 2024,2025). Years must be 4-digit numbers.",
     )
+    parser.add_argument(
+        "--month",
+        type=str,
+        help="Filter uploads to specific month(s). Comma-separated for multiple months (e.g., 1,2 or 01,02). Months must be 1-12.",
+    )
 
     args = parser.parse_args()
 
@@ -483,10 +564,21 @@ Examples:
             logger.error(f"Invalid year argument: {e}")
             sys.exit(1)
 
+    months_filter = None
+    if args.month:
+        try:
+            months_filter = validate_months(args.month)
+        except ValueError as e:
+            logger.error(f"Invalid month argument: {e}")
+            sys.exit(1)
+
     staging_dir = Path.cwd() / "data" / "01-staging" / "import_export"
 
     total, success = upload_all_periods(
-        staging_dir, dry_run=args.dry_run, years_filter=years_filter
+        staging_dir,
+        dry_run=args.dry_run,
+        years_filter=years_filter,
+        months_filter=months_filter,
     )
 
     sys.exit(0 if success == total else 1)

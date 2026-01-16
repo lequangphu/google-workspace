@@ -96,6 +96,75 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 
+def normalize_csv_columns(
+    input_path: Path, output_path: Path, expected_cols: Optional[int] = None
+) -> Path:
+    """Normalize CSV to have consistent column count.
+
+    Reads header row to determine expected column count, then normalizes all rows:
+    - Rows with too few columns: padded with empty strings
+    - Rows with too many columns: truncated, preserving last column (description)
+
+    This fixes issues where cost data is mixed into product rows (e.g., row with 26
+    columns when header expects 25), which causes pandas to skip those rows.
+
+    Args:
+        input_path: Path to input CSV file
+        output_path: Path to write normalized CSV file
+        expected_cols: Optional expected column count. If None, reads from first row.
+
+    Returns:
+        Path to normalized CSV file
+
+    Raises:
+        ValueError: If header row cannot be read or file is malformed
+    """
+    import csv
+
+    with (
+        open(input_path, "r", encoding="utf-8") as infile,
+        open(output_path, "w", encoding="utf-8", newline="") as outfile,
+    ):
+        reader = csv.reader(infile)
+        writer = csv.writer(outfile)
+
+        row_count = 0
+        normalized_count = 0
+
+        for row in reader:
+            row_count += 1
+
+            if row_count == 1:
+                if expected_cols is None:
+                    expected_cols = len(row)
+                writer.writerow(row)
+                continue
+
+            if len(row) < expected_cols:
+                normalized_row = row + [""] * (expected_cols - len(row))
+                normalized_count += 1
+            elif len(row) > expected_cols:
+                last_col = row[-1]
+                normalized_row = row[: expected_cols - 1] + [last_col]
+                normalized_count += 1
+                if len(row) >= 3 and str(row[2]) == "020199146167":
+                    logger.info(
+                        f"Normalized product 020199146167: row {row_count}, {len(row)} -> {len(normalized_row)} cols"
+                    )
+            else:
+                normalized_row = row
+
+            writer.writerow(normalized_row)
+
+    logger.info(f"Normalized CSV: {input_path.name} -> {output_path.name}")
+    logger.info(f"  Total rows: {row_count}")
+    logger.info(f"  Normalized rows: {normalized_count}")
+    if normalized_count > 0:
+        logger.warning(f"  {normalized_count} rows had inconsistent column count")
+
+    return output_path
+
+
 def combine_headers(header_row_1: List[str], header_row_2: List[str]) -> List[str]:
     """Combine two header rows into a single list of clean column names.
 
@@ -283,13 +352,20 @@ def load_and_process_group(
 
             year, month, ngay_value = date_info
 
+            temp_normalized_path = file_path.parent / f"temp_{filename}"
+            normalize_csv_columns(
+                file_path, temp_normalized_path, expected_cols=len(combined_header_key)
+            )
+
             df = pd.read_csv(
-                file_path,
+                temp_normalized_path,
                 skiprows=CONFIG["skiprows"],
                 header=None,
                 encoding="utf-8",
                 engine="python",
             )
+
+            temp_normalized_path.unlink()
 
             # Align columns with header
             if df.shape[1] > len(combined_header_key):
