@@ -16,12 +16,14 @@ steps = ["ingest", "transform", "validate", "export"]
 type = "folder"
 description = "Import/Export Receipts: Year/month files with CT.NHAP, CT.XUAT, XNT tabs"
 folder_ids = [
-    "1RbkY2dd1IaqSHhnivjh6iejKv9mpkSJ_",  # Folder 1 (oldest)
     "1QIP6LCr6lANzzRnAZPmVg7wIWdUmhs6q",  # Folder 2
     "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj",  # Folder 3 (most recent/active)
 ]
 tabs = ["CT.NHAP", "CT.XUAT", "XNT"]
 output_subdir = "import_export"
+
+[sources.import_export_receipts.nested_year_folders]
+"1QIP6LCr6lANzzRnAZPmVg7wIWdUmhs6q" = { 2020 = "1yXtQDnHSgKYYLdQqiLPgm3Pt4ZpfqAmJ", 2021 = "1cCDfbtVBS_qhzb8xPer24oQVeUkA4wZd", 2022 = "18SFVJyuuQ2YbvLW0TKSBCWHyk40SgLXu", 2023 = "1pCf_kRa9tIJ8zdqQA4qYuZ288ST3ferw", 2024 = "1MLC2b0J_3XEhdcYFw4NqOaSVmFPDanRS", 2025 = "1Mnqr0mgPlAom8w03LfGi0Vvg4-8i3Tmq" }
 
 [sources.receivable]
 type = "spreadsheet"
