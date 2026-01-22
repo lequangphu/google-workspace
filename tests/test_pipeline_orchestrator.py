@@ -7,6 +7,7 @@ from src.pipeline.orchestrator import (
     execute_pipeline,
     should_run_transform,
     should_run_upload,
+    find_file_in_drive,
 )
 
 
@@ -24,32 +25,6 @@ class TestOrchestrationLogic:
 
 class TestMockFunctions:
     """Test mocked Google Drive functions."""
-
-    @patch("src.pipeline.orchestrator.Credentials.from_authorized_user_file")
-    def test_authenticate_google_drive_from_token(self, mock_creds):
-        """Test authentication from existing token."""
-        from src.pipeline.orchestrator import authenticate_google_drive
-
-        mock_creds_obj = MagicMock()
-        mock_creds_obj.valid = True
-        mock_creds.return_value = mock_creds_obj
-
-        with patch("os.path.exists", return_value=True):
-            result = authenticate_google_drive()
-            assert result is not None
-
-    @patch("src.pipeline.orchestrator.build")
-    def test_find_file_in_drive(self, mock_build):
-        """Test finding file in Google Drive."""
-        from src.pipeline.orchestrator import find_file_in_drive
-
-        mock_service = MagicMock()
-        mock_service.files().list().execute.return_value = {
-            "files": [{"id": "test_id", "name": "test.csv"}]
-        }
-
-        result = find_file_in_drive(mock_service, "test.csv", "folder_id")
-        assert result == "test_id"
 
     def test_find_file_in_drive_not_found(self):
         """Test finding file that doesn't exist."""

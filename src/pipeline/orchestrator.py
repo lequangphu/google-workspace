@@ -63,7 +63,7 @@ from typing import List, Optional, Tuple
 
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
-from src.modules.google_api import get_sheet_id_by_name, API_CALL_DELAY
+from src.modules.google_api import get_sheet_id_by_name
 
 from src.utils import get_workspace_root
 
@@ -77,28 +77,18 @@ DATA_STAGING_DIR = WORKSPACE_ROOT / "data" / "01-staging"
 DATA_VALIDATED_DIR = WORKSPACE_ROOT / "data" / "02-validated"
 DATA_EXPORT_DIR = WORKSPACE_ROOT / "data" / "03-erp-export"
 
-# Legacy compatibility paths
-DATA_FINAL_DIR = WORKSPACE_ROOT / "data" / "cleaned"
-DATA_PRODUCT_DIR = WORKSPACE_ROOT / "data" / "reports"
-
 # Migrated module paths
 MODULE_INGEST = WORKSPACE_ROOT / "src" / "modules" / "ingest.py"
 
-# Legacy script paths (fallback when migrated versions not available)
-SCRIPT_INGEST = WORKSPACE_ROOT / "legacy" / "ingest.py"
-SCRIPT_CLEAN_NHAP = WORKSPACE_ROOT / "legacy" / "clean_chung_tu_nhap.py"
-SCRIPT_CLEAN_XUAT = WORKSPACE_ROOT / "legacy" / "clean_chung_tu_xuat.py"
-SCRIPT_CLEAN_XNT = WORKSPACE_ROOT / "legacy" / "clean_xuat_nhap_ton.py"
-SCRIPT_GENERATE_PRODUCT_INFO = WORKSPACE_ROOT / "legacy" / "generate_product_info.py"
-
 # Transform module registry: maps source to transformation scripts
-TRANSFORM_MODULES = {
+# NOTE: Module registry loaded from pipeline.toml in execute_pipeline()
+# Legacy hardcoded reference kept for backward compat during migration
+TRANSFORM_MODULES_LEGACY = {
     "import_export_receipts": [
         "clean_inventory.py",
         "clean_receipts_purchase.py",
         "clean_receipts_sale.py",
-        "extract_products.py",
-        "extract_attributes.py",
+        "refine_product_master.py",
     ],
     "receivable": [
         "generate_customers_xlsx.py",
@@ -216,6 +206,7 @@ def add_csv_as_sheet_tab(
     """Add CSV as a tab/sheet in an existing Google Spreadsheet."""
     try:
         import pandas as pd
+        from src.modules.google_api import API_CALL_DELAY
 
         # Sheet name: remove .csv extension
         sheet_name = csv_filepath.stem
@@ -301,7 +292,9 @@ def upload_file_to_drive(
 # === PIPELINE STEPS ===
 
 
-def step_ingest(modules_filter: Optional[List[str]] = None) -> bool:
+def step_ingest(
+    modules_filter: Optional[List[str]] = None,
+) -> bool:
     """Step 1: Ingest data from Google Sheets.
 
     Args:
@@ -313,8 +306,8 @@ def step_ingest(modules_filter: Optional[List[str]] = None) -> bool:
         logger.info(f"Modules: {', '.join(modules_filter)}")
     logger.info("=" * 70)
 
-    # Try migrated module first
-    ingest_script = MODULE_INGEST if MODULE_INGEST.exists() else SCRIPT_INGEST
+    # Use migrated module
+    ingest_script = MODULE_INGEST
 
     if not ingest_script.exists():
         logger.error(f"Ingest script not found: {ingest_script}")
@@ -340,21 +333,36 @@ def step_ingest(modules_filter: Optional[List[str]] = None) -> bool:
         return False
 
 
-def step_transform(modules_filter: Optional[List[str]] = None) -> bool:
+def step_transform(
+    modules_filter: Optional[List[str]] = None,
+    clean_names: bool = False,
+    unify_names: bool = False,
+) -> bool:
     """Step 2: Transform data from raw to staging.
 
     Args:
         modules_filter: List of modules to transform. If None, transform all.
+        clean_names: Clean product names (normalize spaces, fix dimensions, standardize format).
+        unify_names: Unify names for same product code (one code = one name).
     """
     logger.info("=" * 70)
     logger.info("STEP 2: TRANSFORM")
     if modules_filter:
         logger.info(f"Modules: {', '.join(modules_filter)}")
+    if clean_names:
+        logger.info("Product name cleaning: ENABLED")
+    else:
+        logger.info("Product name cleaning: DISABLED (names as-is from 00-raw)")
+    if unify_names:
+        logger.info("Name unification: ENABLED (one code = one name)")
+    else:
+        logger.info("Name unification: DISABLED")
     logger.info("=" * 70)
 
     # Build list of (module, script) tuples from registry
+    # TODO: Load from pipeline.toml in Phase 1
     transform_modules = []
-    for module, scripts in TRANSFORM_MODULES.items():
+    for module, scripts in TRANSFORM_MODULES_LEGACY.items():
         if modules_filter and module not in modules_filter:
             logger.debug(f"Skipping module: {module}")
             continue
@@ -366,7 +374,12 @@ def step_transform(modules_filter: Optional[List[str]] = None) -> bool:
         return True
 
     all_succeeded = True
+
+    # Run all scripts EXCEPT refine_product_master
     for module, script in transform_modules:
+        if script == "refine_product_master.py":
+            continue  # Skip, run separately
+
         script_path = WORKSPACE_ROOT / "src" / "modules" / module / script
 
         if not script_path.exists():
@@ -387,81 +400,44 @@ def step_transform(modules_filter: Optional[List[str]] = None) -> bool:
             logger.error(f"{module}/{script} failed with return code {returncode}")
             all_succeeded = False
 
-    # Fallback to legacy scripts if needed
-    if not all_succeeded or not any(
-        (WORKSPACE_ROOT / "src" / "modules" / m / s).exists()
-        for m, s in transform_modules
-    ):
-        logger.info("Falling back to legacy cleaning scripts...")
-        legacy_scripts = [
-            ("CT.NHAP", SCRIPT_CLEAN_NHAP),
-            ("CT.XUAT", SCRIPT_CLEAN_XUAT),
-            ("XNT", SCRIPT_CLEAN_XNT),
-        ]
+    # Run refine_product_master if any flags enabled
+    if clean_names or unify_names:
+        refine_script = (
+            WORKSPACE_ROOT
+            / "src"
+            / "modules"
+            / "import_export_receipts"
+            / "refine_product_master.py"
+        )
 
-        for script_name, script_path in legacy_scripts:
-            if not script_path.exists():
-                logger.warning(f"Legacy script not found: {script_path}")
-                continue
+        if refine_script.exists():
+            logger.info("Running refine_product_master...")
+            cmd = ["uv", "run", str(refine_script)]
+            if clean_names:
+                cmd.extend(["--clean-names"])
+            if unify_names:
+                cmd.extend(["--unify-names"])
 
-            logger.info(f"Running {script_name} legacy cleaner...")
-            returncode, stdout, stderr = run_command(["uv", "run", str(script_path)])
+            returncode, stdout, stderr = run_command(cmd)
 
             if stdout:
-                logger.info(stdout)
+                logger.debug(stdout)
             if stderr and returncode != 0:
                 logger.warning(stderr)
 
             if returncode == 0:
-                logger.info(f"{script_name} cleaning completed")
+                logger.info("refine_product_master completed")
             else:
                 logger.error(
-                    f"{script_name} cleaning failed with return code {returncode}"
+                    f"refine_product_master failed with return code {returncode}"
                 )
                 all_succeeded = False
+        else:
+            logger.warning("refine_product_master.py not found, skipping refinement")
 
     if all_succeeded:
         logger.info("All transformation scripts completed successfully")
     return all_succeeded
-
-
-def step_generate_product_info() -> bool:
-    """Step 2.5: Generate product information from transformed data (legacy)."""
-    logger.info("=" * 70)
-    logger.info("STEP 2.5: GENERATE PRODUCT INFO (LEGACY)")
-    logger.info("=" * 70)
-
-    if not SCRIPT_GENERATE_PRODUCT_INFO.exists():
-        logger.warning(
-            f"Product generation script not found: {SCRIPT_GENERATE_PRODUCT_INFO}"
-        )
-        return False
-
-    # Clear reports directory before generating
-    if DATA_PRODUCT_DIR.exists():
-        product_files = list(DATA_PRODUCT_DIR.glob("*.csv"))
-        if product_files:
-            logger.info(f"Clearing {len(product_files)} files from /data/reports/")
-            for filepath in product_files:
-                filepath.unlink()
-                logger.debug(f"Deleted {filepath.name}")
-
-    logger.info("Running product info generator...")
-    returncode, stdout, stderr = run_command(
-        ["uv", "run", str(SCRIPT_GENERATE_PRODUCT_INFO)]
-    )
-
-    if stdout:
-        logger.info(stdout)
-    if stderr and returncode != 0:
-        logger.warning(stderr)
-
-    if returncode == 0:
-        logger.info("Product info generation completed")
-        return True
-    else:
-        logger.error(f"Product info generation failed with return code {returncode}")
-        return False
 
 
 def step_export_erp(modules_filter: Optional[List[str]] = None) -> bool:
@@ -562,13 +538,18 @@ def should_run_upload() -> bool:
 
 
 def execute_pipeline(
-    steps: List[str], modules_filter: Optional[List[str]] = None
+    steps: List[str],
+    modules_filter: Optional[List[str]] = None,
+    clean_names: bool = False,
+    unify_names: bool = False,
 ) -> bool:
     """Execute pipeline steps in order.
 
     Args:
-        steps: List of steps to execute (e.g., ["ingest", "transform", "export"])
+        steps: List of steps to execute (e.g., ["ingest", "transform", "export"]).
         modules_filter: Optional list of modules to filter by
+        clean_names: Clean product names (normalize spaces, fix dimensions, standardize format).
+        unify_names: Unify names for same product code (one code = one name).
 
     Returns:
         True if all steps succeeded, False otherwise
@@ -583,14 +564,20 @@ def execute_pipeline(
 
     for step in steps:
         if step == "ingest":
-            if not step_ingest(modules_filter=modules_filter):
+            if not step_ingest(
+                modules_filter=modules_filter,
+            ):
                 logger.error("Ingest failed, aborting pipeline")
                 return False
 
         elif step == "transform":
             transform_succeeded = False
             if should_run_transform():
-                transform_succeeded = step_transform(modules_filter=modules_filter)
+                transform_succeeded = step_transform(
+                    modules_filter=modules_filter,
+                    clean_names=clean_names,
+                    unify_names=unify_names,
+                )
                 if not transform_succeeded:
                     logger.error("Transform failed, aborting pipeline")
                     return False
@@ -729,6 +716,20 @@ Module Aliases: ier=import_export_receipts, rec=receivable, pay=payable, cash=ca
         type=str,
         help="[DEPRECATED] Use --modules instead",
     )
+    parser.add_argument(
+        "--clean-names",
+        "-cn",
+        action="store_true",
+        default=False,
+        help="Clean product names (normalize spaces, fix dimensions, standardize format)",
+    )
+    parser.add_argument(
+        "--unify-names",
+        "-un",
+        action="store_true",
+        default=False,
+        help="Unify names for same product code (one code = one name)",
+    )
 
     args = parser.parse_args()
 
@@ -737,18 +738,17 @@ Module Aliases: ier=import_export_receipts, rec=receivable, pay=payable, cash=ca
     DATA_STAGING_DIR.mkdir(parents=True, exist_ok=True)
     DATA_VALIDATED_DIR.mkdir(parents=True, exist_ok=True)
     DATA_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    DATA_FINAL_DIR.mkdir(parents=True, exist_ok=True)
-    DATA_PRODUCT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Parse modules filter
     modules_filter = None
     if args.modules:
         raw_modules = [m.strip() for m in args.modules.split(",")]
         # Resolve aliases
+        # TODO: Load from pipeline.toml in Phase 1
         modules_filter = []
         invalid_modules = []
         for m in raw_modules:
-            if m in TRANSFORM_MODULES:
+            if m in TRANSFORM_MODULES_LEGACY:
                 modules_filter.append(m)
             elif m in MODULE_ALIASES:
                 modules_filter.append(MODULE_ALIASES[m])
@@ -758,7 +758,7 @@ Module Aliases: ier=import_export_receipts, rec=receivable, pay=payable, cash=ca
         if invalid_modules:
             logger.error(f"Invalid modules: {invalid_modules}")
             logger.error(
-                f"Valid modules: {', '.join(list(TRANSFORM_MODULES.keys()) + list(MODULE_ALIASES.keys()))}"
+                f"Valid modules: {', '.join(list(TRANSFORM_MODULES_LEGACY.keys()) + list(MODULE_ALIASES.keys()))}"
             )
             sys.exit(1)
     elif args.resources:
@@ -773,16 +773,22 @@ Module Aliases: ier=import_export_receipts, rec=receivable, pay=payable, cash=ca
         logger.info("PRODUCTS-ONLY MODE: Ingest → Export Products.xlsx")
         logger.info("=" * 70 + "\n")
         success = step_ingest(
-            modules_filter=["import_export_receipts"]
+            modules_filter=["import_export_receipts"],
         ) and step_export_erp(modules_filter=["import_export_receipts"])
     elif args.step:
         # Legacy single step
         logger.info(f"Running single step: {args.step}")
         modules_for_step = modules_filter
         if args.step == "ingest":
-            success = step_ingest(modules_filter=modules_for_step)
+            success = step_ingest(
+                modules_filter=modules_for_step,
+            )
         elif args.step == "transform":
-            success = step_transform(modules_filter=modules_for_step)
+            success = step_transform(
+                modules_filter=modules_for_step,
+                clean_names=args.clean_names,
+                unify_names=args.unify_names,
+            )
         elif args.step == "upload":
             success = step_upload(modules_filter=modules_for_step)
         elif args.step == "export":
@@ -799,12 +805,19 @@ Module Aliases: ier=import_export_receipts, rec=receivable, pay=payable, cash=ca
             logger.error(f"Invalid steps: {invalid_steps}")
             logger.error(f"Valid steps: {', '.join(valid_steps)}")
             sys.exit(1)
-        success = execute_pipeline(steps=steps, modules_filter=modules_filter)
+        success = execute_pipeline(
+            steps=steps,
+            modules_filter=modules_filter,
+            clean_names=args.clean_names,
+            unify_names=args.unify_names,
+        )
     else:
         # Default: full pipeline
         success = execute_pipeline(
             steps=["ingest", "transform", "export", "upload"],
             modules_filter=modules_filter,
+            clean_names=args.clean_names,
+            unify_names=args.unify_names,
         )
 
     sys.exit(0 if success else 1)

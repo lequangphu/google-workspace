@@ -1,16 +1,18 @@
 """Copy formula tab to all period spreadsheets (one-time operation).
 
 This script copies a tab with formulas from a source spreadsheet to all
-period spreadsheets in configured folders. The copied tab preserves all formulas
-and formatting, uses the original tab name (not "Copy of ..."), and replaces
-any existing tab with the same name. The tab is placed as the first tab
-in each target spreadsheet.
+"Xuất Nhập Tồn YYYY-MM" period spreadsheets. The copied tab preserves all formulas
+and formatting. The tab is placed as the first tab in each target spreadsheet.
 
 Source:
 - Spreadsheet: 1O_XmlU_gAdPyyszu9jdFVfltjFv8OpqqAEmIBykVVzI
-- Tab ID: 2044382542
+- Tab Name: Đối chiếu dữ liệu (looked up dynamically)
 
-Target: All spreadsheets in configured folders from pipeline.toml (excluding source)
+Target: All "Xuất Nhập Tồn YYYY-MM" spreadsheets in Google Drive
+
+Behavior:
+- If tab already exists in target spreadsheet → skip
+- If tab doesn't exist → copy and rename to "Đối chiếu dữ liệu"
 
 Usage:
   # Dry run (preview only)
@@ -23,21 +25,14 @@ Usage:
 import logging
 import sys
 import time
-from pathlib import Path
-
-import tomllib
+from typing import Dict, List, Optional, Tuple
 
 from src.modules.google_api import (
     API_CALL_DELAY,
     connect_to_drive,
     copy_sheet_to_spreadsheet,
-    delete_sheet,
-    find_sheets_in_folder,
     get_sheet_id_by_name,
-    get_sheet_name_by_id,
-    load_manifest,
     rename_sheet,
-    save_manifest,
 )
 
 logging.basicConfig(
@@ -48,30 +43,132 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SOURCE_SPREADSHEET_ID = "1O_XmlU_gAdPyyszu9jdFVfltjFv8OpqqAEmIBykVVzI"
-SOURCE_SHEET_ID = 2044382542
-
-CONFIG_PATH = Path("pipeline.toml")
+SOURCE_TAB_NAME = "Đối chiếu dữ liệu"
 
 
-def load_folder_ids():
-    """Load folder IDs from pipeline.toml."""
-    with open(CONFIG_PATH, "rb") as f:
-        config = tomllib.load(f)
-    return config["sources"]["import_export_receipts"]["folder_ids"]
+def get_source_sheet_id(
+    sheets_service, spreadsheet_id: str, tab_name: str
+) -> Optional[int]:
+    """Find sheet ID by tab name in source spreadsheet.
+
+    Args:
+        sheets_service: Google Sheets API service.
+        spreadsheet_id: Source spreadsheet ID.
+        tab_name: Name of the tab to find.
+
+    Returns:
+        Sheet ID if found, None otherwise.
+    """
+    spreadsheet = (
+        sheets_service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title))",
+        )
+        .execute()
+    )
+
+    for sheet in spreadsheet.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("title") == tab_name:
+            sheet_id = props.get("sheetId")
+            logger.info(f"Found source tab '{tab_name}' with ID: {sheet_id}")
+            return sheet_id
+
+    logger.error(f"Source tab '{tab_name}' not found in spreadsheet")
+    return None
 
 
-def copy_to_all_folders(folder_ids: list, dry_run: bool = False) -> tuple[int, int]:
-    """Copy formula tab to all spreadsheets in configured folders.
+def find_spreadsheets_by_pattern(
+    drive_service, pattern: str = "Xuất Nhập Tồn"
+) -> List[Dict]:
+    """Find all spreadsheets matching a name pattern.
+
+    Args:
+        drive_service: Google Drive API service.
+        pattern: Name pattern to search for.
+
+    Returns:
+        List of dicts with 'id' and 'name' keys.
+    """
+    query = (
+        f"name contains '{pattern}' "
+        "and mimeType='application/vnd.google-apps.spreadsheet' "
+        "and trashed=false"
+    )
+    results = (
+        drive_service.files()
+        .list(q=query, fields="files(id,name)", orderBy="name")
+        .execute()
+    )
+
+    spreadsheets = results.get("files", [])
+    logger.info(f"Found {len(spreadsheets)} spreadsheets matching '{pattern}'")
+
+    return spreadsheets
+
+
+def extract_period_from_name(name: str) -> Optional[str]:
+    """Extract YYYY-MM period from spreadsheet name.
+
+    Args:
+        name: Spreadsheet name (e.g., "Xuất Nhập Tồn 2023-05")
+
+    Returns:
+        Period string (e.g., "2023_05") or None if not found.
+    """
+    import re
+
+    # Match pattern like "Xuất Nhập Tồn 2023-05" or "Xuất Nhập Tồn 2023-5"
+    match = re.search(r"Xuất Nhập Tồn\s+(\d{4})[-/](\d{1,2})", name)
+    if match:
+        year, month = match.groups()
+        return f"{year}_{int(month):02d}"
+
+    return None
+
+
+def build_period_to_spreadsheet_map(
+    spreadsheets: List[Dict],
+) -> Dict[str, Dict]:
+    """Build a mapping from period to spreadsheet info.
+
+    Args:
+        spreadsheets: List of spreadsheet dicts with 'id' and 'name'.
+
+    Returns:
+        Dict mapping period (e.g., "2023_05") -> {'id': spreadsheet_id, 'name': name}
+    """
+    period_map = {}
+
+    for sheet in spreadsheets:
+        period = extract_period_from_name(sheet["name"])
+        if period:
+            period_map[period] = sheet
+
+    return period_map
+
+
+def copy_to_all_periods(
+    drive_service,
+    sheets_service,
+    source_sheet_id: int,
+    source_name: str,
+    year_filter: Optional[int] = None,
+    dry_run: bool = False,
+) -> Tuple[int, int]:
+    """Copy formula tab to all "Xuất Nhập Tồn" period spreadsheets.
 
     For each target spreadsheet:
-    - Skips source spreadsheet
-    - Checks if a tab with the source name already exists
-    - If exists: copies source, renames to original name, deletes old tab
-    - If not exists: copies source and renames to original name
+    - If tab already exists → skip
+    - If tab doesn't exist → copy and rename to original name
     - Places tab in first position
 
     Args:
-        folder_ids: List of folder IDs to scan.
+        drive_service: Google Drive API service.
+        sheets_service: Google Sheets API service.
+        source_sheet_id: ID of source tab to copy.
+        source_name: Name of source tab.
         dry_run: If True, log without executing copy operations.
 
     Returns:
@@ -81,107 +178,92 @@ def copy_to_all_folders(folder_ids: list, dry_run: bool = False) -> tuple[int, i
     logger.info("COPYING FORMULA TAB TO ALL PERIOD SPREADSHEETS")
     if dry_run:
         logger.info("MODE: DRY RUN (no changes made)")
+    if year_filter:
+        logger.info(f"FILTER: Year {year_filter} only")
     logger.info("=" * 70)
-    logger.info(f"Source: Spreadsheet {SOURCE_SPREADSHEET_ID}, Tab {SOURCE_SHEET_ID}")
+    logger.info(
+        f"Source: Spreadsheet {SOURCE_SPREADSHEET_ID}, Tab '{source_name}' (ID: {source_sheet_id})"
+    )
 
-    source_name = None
-    if not dry_run:
-        drive_service, sheets_service = connect_to_drive()
-        source_name = get_sheet_name_by_id(
-            sheets_service, SOURCE_SPREADSHEET_ID, SOURCE_SHEET_ID
-        )
-        logger.info(f"Source tab name: {source_name}")
-    else:
-        logger.info("[DRY RUN] Would connect to Google APIs")
+    # Find all "Xuất Nhập Tồn" spreadsheets
+    spreadsheets = find_spreadsheets_by_pattern(drive_service)
 
-    logger.info("=" * 70)
+    if not spreadsheets:
+        logger.warning("No 'Xuất Nhập Tồn' spreadsheets found")
+        return 0, 0
 
-    manifest = load_manifest()
+    # Build period mapping
+    period_map = build_period_to_spreadsheet_map(spreadsheets)
+
+    if year_filter:
+        period_map = {
+            k: v for k, v in period_map.items() if k.startswith(f"{year_filter}_")
+        }
+        logger.info(f"Filtered to year {year_filter}: {len(period_map)} spreadsheets")
+
+    logger.info(f"Found {len(period_map)} period spreadsheets with valid periods")
+
+    # Log periods found (sorted)
+    periods = sorted(period_map.keys())
+    logger.info(f"Periods: {', '.join(periods)}")
+
     total_attempts = 0
     successful_copies = 0
 
-    for idx, folder_id in enumerate(folder_ids, 1):
-        logger.info("")
-        logger.info("-" * 70)
-        logger.info(f"FOLDER {idx}/{len(folder_ids)}: {folder_id}")
-        logger.info("-" * 70)
+    for period in periods:
+        sheet_info = period_map[period]
+        sheet_id = sheet_info["id"]
+        sheet_name = sheet_info["name"]
 
-        if not dry_run:
-            sheets = find_sheets_in_folder(drive_service, folder_id)
-        else:
-            logger.info("[DRY RUN] Would list spreadsheets in folder")
-            sheets = []
-
-        if not sheets:
-            logger.warning(f"No spreadsheets found in folder {folder_id}")
+        # Skip source spreadsheet (copying to itself is pointless)
+        if sheet_id == SOURCE_SPREADSHEET_ID:
+            logger.info(f"  Skipping source spreadsheet: {sheet_name}")
             continue
 
-        logger.info(f"Found {len(sheets)} spreadsheet(s)")
+        logger.info("")
+        logger.info("-" * 70)
+        logger.info(f"Period: {period} -> {sheet_name}")
+        logger.info(f"Spreadsheet ID: {sheet_id}")
+        logger.info("-" * 70)
 
-        for sheet in sheets:
-            sheet_id = sheet["id"]
-            sheet_name = sheet["name"]
-
-            if sheet_id == SOURCE_SPREADSHEET_ID:
-                logger.info(f"  Skipping source spreadsheet: {sheet_name}")
-                continue
-
-            logger.info("")
-            logger.info(f"  Processing: {sheet_name}")
-            logger.info(f"  Spreadsheet ID: {sheet_id}")
-
-            if dry_run:
-                logger.info(
-                    f"  [DRY RUN] Would copy tab '{source_name}' to this spreadsheet"
-                )
-                total_attempts += 1
-                successful_copies += 1
-                continue
-
-            existing_sheet_id = get_sheet_id_by_name(
-                sheets_service, sheet_id, source_name
+        if dry_run:
+            logger.info(
+                f"  [DRY RUN] Would copy tab '{source_name}' to this spreadsheet"
             )
-
-            if existing_sheet_id:
-                logger.info(
-                    f"  Existing tab '{source_name}' found (ID: {existing_sheet_id})"
-                )
-
-            result = copy_sheet_to_spreadsheet(
-                sheets_service,
-                SOURCE_SPREADSHEET_ID,
-                SOURCE_SHEET_ID,
-                sheet_id,
-                move_to_first=True,
-            )
-
-            if not result:
-                logger.error("  ✗ Failed to copy")
-                total_attempts += 1
-                continue
-
-            new_sheet_id = result.get("sheetId")
-            logger.info(f"  Copied as new sheet {new_sheet_id}")
-
-            if existing_sheet_id:
-                if delete_sheet(sheets_service, sheet_id, existing_sheet_id):
-                    logger.info(f"  ✓ Deleted old tab (ID: {existing_sheet_id})")
-                else:
-                    logger.error("  ✗ Failed to delete old tab")
-
-            if rename_sheet(sheets_service, sheet_id, new_sheet_id, source_name):
-                logger.info(f"  ✓ Renamed to '{source_name}'")
-            else:
-                logger.error("  ✗ Failed to rename sheet")
-                total_attempts += 1
-                continue
-
             total_attempts += 1
             successful_copies += 1
+            continue
 
-            time.sleep(API_CALL_DELAY)
+        if get_sheet_id_by_name(sheets_service, sheet_id, source_name):
+            logger.info(f"  Skipping - tab '{source_name}' already exists")
+            continue
 
-    save_manifest(manifest)
+        result = copy_sheet_to_spreadsheet(
+            sheets_service,
+            SOURCE_SPREADSHEET_ID,
+            source_sheet_id,
+            sheet_id,
+        )
+
+        if not result:
+            logger.error("  Failed to copy")
+            total_attempts += 1
+            continue
+
+        new_sheet_id = result.get("sheetId")
+        logger.info(f"  Copied as new sheet {new_sheet_id}")
+
+        if rename_sheet(sheets_service, sheet_id, new_sheet_id, source_name):
+            logger.info(f"  Renamed to '{source_name}'")
+        else:
+            logger.error("  Failed to rename sheet")
+            total_attempts += 1
+            continue
+
+        total_attempts += 1
+        successful_copies += 1
+
+        time.sleep(API_CALL_DELAY)
 
     logger.info("")
     logger.info("=" * 70)
@@ -216,6 +298,11 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--year",
+        type=int,
+        help="Process only spreadsheets from this year (e.g., 2024)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview copy operations without executing",
@@ -223,9 +310,29 @@ Examples:
 
     args = parser.parse_args()
 
-    folder_ids = load_folder_ids()
-    logger.info(f"Loaded {len(folder_ids)} folder IDs from pipeline.toml")
+    try:
+        drive_service, sheets_service = connect_to_drive()
+        logger.info("Connected to Google Drive")
+    except Exception as e:
+        logger.error(f"Failed to connect to Google Drive: {e}")
+        sys.exit(1)
 
-    total, success = copy_to_all_folders(folder_ids, dry_run=args.dry_run)
+    # Look up source sheet ID by tab name
+    source_sheet_id = get_source_sheet_id(
+        sheets_service, SOURCE_SPREADSHEET_ID, SOURCE_TAB_NAME
+    )
+
+    if source_sheet_id is None:
+        logger.error(f"Could not find source tab '{SOURCE_TAB_NAME}'")
+        sys.exit(1)
+
+    total, success = copy_to_all_periods(
+        drive_service,
+        sheets_service,
+        source_sheet_id,
+        SOURCE_TAB_NAME,
+        year_filter=args.year,
+        dry_run=args.dry_run,
+    )
 
     sys.exit(0 if success == total else 1)

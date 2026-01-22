@@ -23,11 +23,6 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from src.modules.import_export_receipts.product_disambiguation import (
-    disambiguate_product_codes,
-    log_disambiguation_summary,
-)
-
 # ============================================================================
 # LOGGING SETUP
 # ============================================================================
@@ -390,29 +385,11 @@ def process_groups(
         if "Chứng từ xuất_PXK" in combined_df.columns:
             combined_df.rename(columns={"Chứng từ xuất_PXK": "Chứng từ"}, inplace=True)
 
-        # Calculate total quantity
-        so_luong_ban_le = pd.to_numeric(
+        # Calculate quantity from Số lượng_Bán lẻ only
+        combined_df["Số lượng"] = pd.to_numeric(
             combined_df.get("Số lượng_Bán lẻ", pd.Series(index=combined_df.index)),
             errors="coerce",
         ).fillna(0)
-        ban_si = pd.to_numeric(
-            combined_df.get("Bán sì", pd.Series(index=combined_df.index)),
-            errors="coerce",
-        ).fillna(0)
-
-        # Handle alternative pattern where quantity is combined (Số lượng_Bán sì)
-        if (
-            "Số lượng_Bán sì" in combined_df.columns
-            and so_luong_ban_le.sum() == 0
-            and ban_si.sum() == 0
-        ):
-            so_luong_ban_si = pd.to_numeric(
-                combined_df.get("Số lượng_Bán sì", pd.Series(index=combined_df.index)),
-                errors="coerce",
-            ).fillna(0)
-            combined_df["Số lượng"] = so_luong_ban_si
-        else:
-            combined_df["Số lượng"] = so_luong_ban_le + ban_si
 
         # Drop zero-quantity rows
         combined_df = combined_df[
@@ -590,22 +567,14 @@ def transform_sale_receipts(
         )
         final_df = final_df.drop(columns=["Ngày_dt"], errors="ignore")
 
-    # Step 7: Disambiguate product codes
-    logger.info("=" * 70)
-    logger.info("Step 7: Disambiguating product codes")
-    logger.info("=" * 70)
-    final_df, disambig_stats = disambiguate_product_codes(
-        final_df,
-        code_col="Mã hàng",
-        name_col="Tên hàng",
-        date_col="Ngày",
-    )
-    log_disambiguation_summary(disambig_stats)
-
-    # Step 8: Save output
+    # Step 6: Save output
     output_filepath = output_dir / output_filename
     final_df.to_csv(output_filepath, index=False, encoding="utf-8")
     logger.info(f"Saved to: {output_filepath}")
     logger.info(f"Rows: {len(final_df)}, Columns: {len(final_df.columns)}")
 
     return output_filepath
+
+
+if __name__ == "__main__":
+    transform_sale_receipts()

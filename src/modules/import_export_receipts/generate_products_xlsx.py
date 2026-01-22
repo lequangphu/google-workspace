@@ -25,6 +25,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from src.erp.templates import ProductTemplate
 from src.utils.product_attributes import extract_attributes
 from src.utils.staging_cache import StagingCache
+from src.utils.xlsx_formatting import XLSXFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -376,38 +377,16 @@ def build_template_dataframe(
 
 
 def format_product_xlsx(output_path: Path) -> None:
-    """Apply Excel formatting to Products XLSX."""
-    workbook = load_workbook(output_path)
-    worksheet = workbook.active
+    """Apply Excel formatting to Products XLSX.
 
-    header_fill = PatternFill(
-        start_color="4472C4", end_color="4472C4", fill_type="solid"
-    )
-    header_font = Font(color="FFFFFF", bold=True)
-
+    Delegates to XLSXFormatter.format_existing_xlsx for standard formatting.
+    """
     template = ProductTemplate()
-
-    for col_idx, col_spec in enumerate(template.COLUMNS, start=1):
-        cell = worksheet.cell(row=1, column=col_idx)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    for col_idx, col_spec in enumerate(template.COLUMNS, start=1):
-        letter = worksheet.cell(row=1, column=col_idx).column_letter
-        worksheet.column_dimensions[letter].width = 18
-
-        if col_spec.format_code:
-            for row in range(2, worksheet.max_row + 1):
-                cell = worksheet.cell(row=row, column=col_idx)
-                cell.number_format = col_spec.format_code
-                cell.alignment = Alignment(horizontal="right")
-        else:
-            for row in range(2, worksheet.max_row + 1):
-                cell = worksheet.cell(row=row, column=col_idx)
-                cell.alignment = Alignment(horizontal="left")
-
-    workbook.save(output_path)
+    XLSXFormatter.format_existing_xlsx(
+        output_path=output_path,
+        template=template,
+        column_width=18,
+    )
 
 
 def write_to_spreadsheet(
@@ -490,7 +469,12 @@ def process(
         inventory_df = get_latest_inventory(staging_dir)
         logger.info(f"Loaded inventory data: {len(inventory_df)} products")
 
-        CUTOFF_DATE = pd.Timestamp("2025-01-01")
+        # Load cutoff date from config, fallback to hardcoded default
+        cutoff_date_str = _CONFIG.get("migration_filter", {}).get(
+            "sales_recency_threshold", "2025-01-01"
+        )
+        CUTOFF_DATE = pd.Timestamp(cutoff_date_str)
+        logger.info(f"Using cutoff date: {CUTOFF_DATE.date()}")
 
         xuat_df["Ngày"] = pd.to_datetime(xuat_df["Ngày"], errors="coerce")
         products_with_sales = set(

@@ -1,15 +1,14 @@
 """Google API utilities for Drive and Sheets services."""
 
 import csv
-import json
+import functools
 import logging
 import re
 import socket
 import ssl
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 import pandas as pd
 
@@ -32,154 +31,72 @@ class SheetMetadata(TypedDict):
     modifiedTime: str
 
 
-class FolderEntry(TypedDict):
-    """Single folder entry in manifest cache."""
-
-    scanned_at: str
-    sheets: list[SheetMetadata]
-
-
-class Manifest(TypedDict):
-    """Root manifest cache structure."""
-
-    version: int
-    folders: dict[str, FolderEntry]
-
-
-# Manifest cache file location
-MANIFEST_PATH = Path("data/.drive_manifest.json")
-MANIFEST_CACHE_TTL_HOURS = 24  # Refresh folders older than 24 hours
-
 # Rate limiting: 60 requests per minute per user = 1 request per second max
 # Use 0.5s to stay safely under the limit while being faster
 API_CALL_DELAY = 0.5  # seconds
+
+
+def retry_api_call(func):
+    """Decorator for retrying Google API calls with exponential backoff.
+
+    Retries on transient errors (429 rate limit, 500-504 server errors,
+    timeouts, connection errors) but not on permanent errors (400, 401, 403, 404).
+
+    Max retries: 3 with exponential backoff (2^attempt seconds: 1, 2, 4).
+
+    Args:
+        func: Function to decorate.
+
+    Returns:
+        Decorated function that retries on transient failures.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        for attempt in range(3):  # Max 3 retries
+            try:
+                return func(*args, **kwargs)
+            except HttpError as e:
+                # Don't retry on permanent errors (client errors)
+                if e.status_code in (400, 401, 403, 404):
+                    raise  # Permanent error, don't retry
+                # Retry on rate limit (429) or server errors (500-504)
+                if e.status_code in (429, 500, 501, 502, 503, 504):
+                    if attempt < 2:  # Don't wait after last attempt
+                        wait_time = 2**attempt
+                        logger.warning(
+                            f"API error {e.status_code} on {func.__name__}, "
+                            f"retrying in {wait_time}s (attempt {attempt + 1}/3)"
+                        )
+                        time.sleep(wait_time)
+                        continue
+                raise  # Other HTTP errors or final attempt
+            except (
+                TimeoutError,
+                socket.timeout,
+                ssl.SSLError,
+                ConnectionResetError,
+                OSError,
+            ) as e:
+                if attempt < 2:
+                    wait_time = 2**attempt
+                    logger.warning(
+                        f"Network error on {func.__name__}, "
+                        f"retrying in {wait_time}s (attempt {attempt + 1}/3): {e}"
+                    )
+                    time.sleep(wait_time)
+                    continue
+                raise  # Final attempt
+        return None  # Should never reach here
+
+    return wrapper
+
 
 # OAuth2 scopes for Google Drive and Sheets APIs
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
 ]
-
-
-def load_manifest() -> Manifest:
-    """Load folder→sheets manifest from cache.
-
-    Returns:
-        Manifest dict with structure: {"version": 1, "folders": {folder_id: {...}}}.
-    """
-    if MANIFEST_PATH.exists():
-        try:
-            with open(MANIFEST_PATH, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"Could not load manifest: {e}")
-    return {"version": 1, "folders": {}}
-
-
-def save_manifest(manifest: Manifest) -> None:
-    """Save manifest to cache file.
-
-    Args:
-        manifest: Manifest dict to save.
-    """
-    try:
-        MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(MANIFEST_PATH, "w") as f:
-            json.dump(manifest, f, indent=2)
-    except Exception as e:
-        logger.warning(f"Could not save manifest: {e}")
-
-
-def is_manifest_stale(scanned_at_iso: str) -> bool:
-    """Check if folder scan is older than cache TTL.
-
-    Args:
-        scanned_at_iso: ISO timestamp string from manifest.
-
-    Returns:
-        True if stale (should refresh), False if fresh.
-    """
-    try:
-        scanned_at = datetime.fromisoformat(scanned_at_iso.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
-        age_hours = (now - scanned_at).total_seconds() / 3600
-        return age_hours > MANIFEST_CACHE_TTL_HOURS
-    except Exception:
-        return True  # If unparseable, treat as stale
-
-
-def get_cached_sheets_for_folder(
-    manifest: Manifest, folder_id: str
-) -> tuple[Optional[list[SheetMetadata]], bool]:
-    """Get cached sheets for a folder if fresh, else None.
-
-    Args:
-        manifest: Manifest dict.
-        folder_id: ID of folder to query.
-
-    Returns:
-        Tuple of (sheets_list, is_fresh) or (None, False) if not cached/stale.
-    """
-    if folder_id not in manifest.get("folders", {}):
-        return None, False
-
-    folder_entry = manifest["folders"][folder_id]
-    if is_manifest_stale(folder_entry.get("scanned_at", "")):
-        return None, False
-
-    return folder_entry.get("sheets", []), True
-
-
-def update_manifest_for_folder(
-    manifest: Manifest, folder_id: str, sheets: list[SheetMetadata]
-) -> None:
-    """Update manifest with freshly scanned folder data.
-
-    Args:
-        manifest: Manifest dict to update (modified in place).
-        folder_id: ID of folder.
-        sheets: List of sheet metadata dicts.
-    """
-    if "folders" not in manifest:
-        manifest["folders"] = {}
-
-    manifest["folders"][folder_id] = {
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
-        "sheets": sheets,
-    }
-
-
-def get_sheets_for_folder(manifest: Manifest, drive_service, folder_id: str) -> tuple:
-    """Get sheets for a folder, using cache if fresh, else fetch from Drive.
-
-    Handles caching automatically. If cache is fresh, returns cached sheets and
-    reports API call saved. If stale or missing, queries Drive API and updates manifest.
-
-    Args:
-        manifest: Manifest dict (modified in place if fetching fresh data).
-        drive_service: Google Drive API service object.
-        folder_id: ID of folder to scan.
-
-    Returns:
-        Tuple of (sheets_list, api_calls_saved: int).
-            sheets_list is list[SheetMetadata], api_calls_saved is 0 or 1.
-    """
-    cached_sheets, is_fresh = get_cached_sheets_for_folder(manifest, folder_id)
-    if cached_sheets is not None:
-        return cached_sheets, 1  # Cache hit, saved 1 API call
-
-    # Not cached or stale, fetch from Drive API
-    sheets = find_sheets_in_folder(drive_service, folder_id)
-    if sheets:
-        update_manifest_for_folder(manifest, folder_id, sheets)
-    return sheets, 0  # API call made
-
-
-def clear_manifest() -> None:
-    """Clear entire manifest cache (force full refresh on next run)."""
-    if MANIFEST_PATH.exists():
-        MANIFEST_PATH.unlink()
-        logger.info(f"Cleared manifest cache at {MANIFEST_PATH}")
 
 
 def authenticate_google():
@@ -227,6 +144,7 @@ def connect_to_drive():
     return drive_service, sheets_service
 
 
+@retry_api_call
 def find_year_folders(drive_service):
     """Find all year folders in Google Drive.
 
@@ -245,6 +163,195 @@ def find_year_folders(drive_service):
     return {folder["name"]: folder["id"] for folder in folders}
 
 
+@retry_api_call
+def find_spreadsheet_in_folder(drive_service, folder_id, spreadsheet_name):
+    """Find a specific spreadsheet by name within a folder.
+
+    Args:
+        drive_service: Google Drive API service object.
+        folder_id: ID of the parent folder.
+        spreadsheet_name: Name of the spreadsheet to find (with or without .xlsx extension).
+
+    Returns:
+        Spreadsheet ID if found, None otherwise.
+    """
+    # Handle both with and without .xlsx extension
+    if not spreadsheet_name.endswith(".xlsx"):
+        spreadsheet_name = f"{spreadsheet_name}.xlsx"
+
+    query = (
+        f"'{folder_id}' in parents "
+        f"and name = '{spreadsheet_name}' "
+        "and mimeType='application/vnd.google-apps.spreadsheet' "
+        "and trashed=false"
+    )
+
+    results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+    time.sleep(API_CALL_DELAY)
+
+    files = results.get("files", [])
+    if files:
+        return files[0]["id"]
+    return None
+
+
+@retry_api_call
+def find_subfolder_in_folder(drive_service, folder_id, subfolder_name):
+    """Find a specific subfolder by name within a folder.
+
+    Args:
+        drive_service: Google Drive API service object.
+        folder_id: ID of the parent folder.
+        subfolder_name: Name of the subfolder to find.
+
+    Returns:
+        Folder ID if found, None otherwise.
+    """
+    query = (
+        f"'{folder_id}' in parents "
+        f"and name = '{subfolder_name}' "
+        "and mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false"
+    )
+
+    results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+    time.sleep(API_CALL_DELAY)
+
+    folders = results.get("files", [])
+    if folders:
+        return folders[0]["id"]
+    return None
+
+
+@retry_api_call
+def find_year_folders_in_receipts_folder(drive_service, receipts_folder_id):
+    """Find all year folders within the Import Export Receipts folder.
+
+    Args:
+        drive_service: Google Drive API service object.
+        receipts_folder_id: ID of the Import Export Receipts folder.
+
+    Returns:
+        Dict of {year: folder_id} for year folders (2020, 2021, etc.).
+    """
+    query = (
+        f"'{receipts_folder_id}' in parents "
+        "and name contains '202' "  # Match folders containing years starting with 202
+        "and mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false"
+    )
+
+    results = (
+        drive_service.files()
+        .list(
+            q=query,
+            fields="files(id, name)",
+            orderBy="name",  # Sort by name to get chronological order
+        )
+        .execute()
+    )
+    time.sleep(API_CALL_DELAY)
+
+    year_folders = {}
+    for folder in results.get("files", []):
+        folder_name = folder["name"]
+        # Extract year from folder names like "Xuất Nhập Tồn 2020"
+        import re
+
+        year_match = re.search(r"(\d{4})", folder_name)
+        if year_match:
+            try:
+                year = int(year_match.group(1))
+                if 2020 <= year <= 2030:  # Reasonable year range
+                    year_folders[year] = folder["id"]
+            except ValueError:
+                continue  # Skip folders that aren't valid years
+
+    return year_folders
+
+
+def find_receipt_sheets(
+    drive_service,
+    source_config: Dict[str, str],
+    year_list: Optional[List[int]] = None,
+    month_list: Optional[List[int]] = None,
+) -> List[Dict[str, Any]]:
+    """Discover import/export receipts spreadsheets with filtering.
+
+    This is the single source of truth for finding monthly receipts
+    spreadsheets. Used by both ingest.py and check_reconciliation_discrepancies.py.
+
+    Args:
+        drive_service: Google Drive API service object.
+        source_config: Dict with 'root_folder_id' and 'receipts_subfolder_name'
+            from pipeline.toml sources section.
+        year_list: Optional list of years to filter (e.g., [2024, 2025]).
+            If None, all years are included.
+        month_list: Optional list of months to filter (e.g., [1, 2, 12]).
+            If None, all months are included.
+
+    Returns:
+        List of sheet dicts with 'id', 'name', 'modifiedTime', 'year', 'month' keys.
+        Sorted by (year, month).
+
+    Raises:
+        FileNotFoundError: If receipts subfolder is not found.
+    """
+    root_folder_id = source_config["root_folder_id"]
+    receipts_subfolder_name = source_config["receipts_subfolder_name"]
+
+    # Step 1: Find receipts subfolder
+    receipts_folder_id = find_subfolder_in_folder(
+        drive_service, root_folder_id, receipts_subfolder_name
+    )
+    if not receipts_folder_id:
+        raise FileNotFoundError(
+            f"Could not find '{receipts_subfolder_name}' in root folder {root_folder_id}"
+        )
+
+    # Step 2: Discover year folders
+    year_folders = find_year_folders_in_receipts_folder(
+        drive_service, receipts_folder_id
+    )
+    if not year_folders:
+        return []
+
+    # Step 3: Collect all sheets from all year folders with filtering
+    all_sheets = []
+    for year_num, year_folder_id in sorted(year_folders.items()):
+        # Skip year if not in filter
+        if year_list is not None and year_num not in year_list:
+            continue
+
+        # Get sheets from this year folder
+        sheets = find_sheets_in_folder(drive_service, year_folder_id)
+
+        for sheet in sheets:
+            file_name = sheet["name"]
+
+            # Parse year/month from filename
+            parsed_year, parsed_month = parse_file_metadata(file_name)
+
+            # Skip if metadata invalid
+            if parsed_year is None or parsed_month is None:
+                continue
+
+            # Skip month if not in filter
+            if month_list is not None and parsed_month not in month_list:
+                continue
+
+            # Enrich sheet with parsed metadata
+            sheet["year"] = parsed_year
+            sheet["month"] = parsed_month
+            all_sheets.append(sheet)
+
+    # Sort by year, month
+    all_sheets.sort(key=lambda s: (s["year"], s["month"]))
+
+    return all_sheets
+
+
+@retry_api_call
 def find_sheets_in_folder(drive_service, folder_id):
     """Find all Google Sheets in a folder.
 
@@ -273,6 +380,7 @@ def find_sheets_in_folder(drive_service, folder_id):
         return []
 
 
+@retry_api_call
 def get_sheet_tabs(sheets_service, spreadsheet_id):
     """Get all sheet tab names from a spreadsheet.
 
@@ -283,21 +391,18 @@ def get_sheet_tabs(sheets_service, spreadsheet_id):
     Returns:
         List of tab names.
     """
-    try:
-        result = (
-            sheets_service.spreadsheets()
-            .get(spreadsheetId=spreadsheet_id, fields="sheets.properties.title")
-            .execute()
-        )
-        time.sleep(API_CALL_DELAY)
-        return [sheet["properties"]["title"] for sheet in result.get("sheets", [])]
-    except HttpError as e:
-        logger.error(f"Failed to get tabs from spreadsheet {spreadsheet_id}: {e}")
-        return []
+    result = (
+        sheets_service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets.properties.title")
+        .execute()
+    )
+    time.sleep(API_CALL_DELAY)
+    return [sheet["properties"]["title"] for sheet in result.get("sheets", [])]
 
 
+@retry_api_call
 def get_sheet_id_by_name(sheets_service, spreadsheet_id, sheet_name):
-    """Get sheet ID by sheet name with retry logic.
+    """Get sheet ID by sheet name.
 
     Args:
         sheets_service: Google Sheets API service object.
@@ -307,48 +412,24 @@ def get_sheet_id_by_name(sheets_service, spreadsheet_id, sheet_name):
     Returns:
         Sheet ID if found, None otherwise.
     """
-    max_retries = 3
-
-    for attempt in range(max_retries):
-        try:
-            result = (
-                sheets_service.spreadsheets()
-                .get(
-                    spreadsheetId=spreadsheet_id,
-                    fields="sheets.properties(sheetId,title)",
-                )
-                .execute()
-            )
-            time.sleep(API_CALL_DELAY)
-            for sheet in result.get("sheets", []):
-                if sheet["properties"]["title"] == sheet_name:
-                    return sheet["properties"]["sheetId"]
-            return None
-        except HttpError as e:
-            if e.status_code == 429 and attempt < max_retries - 1:
-                wait_time = 2**attempt
-                logger.warning(
-                    f"Rate limited getting sheet ID for {sheet_name}, "
-                    f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})"
-                )
-                time.sleep(wait_time)
-            else:
-                logger.error(f"Failed to get sheet ID for {sheet_name}: {e}")
-                return None
-        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
-            wait_time = 2**attempt
-            logger.warning(
-                f"Timeout getting sheet ID for {sheet_name}, "
-                f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries}): {e}"
-            )
-            time.sleep(wait_time)
-
-    logger.error(f"Failed to get sheet ID for {sheet_name} after {max_retries} retries")
+    result = (
+        sheets_service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties(sheetId,title)",
+        )
+        .execute()
+    )
+    time.sleep(API_CALL_DELAY)
+    for sheet in result.get("sheets", []):
+        if sheet["properties"]["title"] == sheet_name:
+            return sheet["properties"]["sheetId"]
     return None
 
 
+@retry_api_call
 def get_sheet_name_by_id(sheets_service, spreadsheet_id, sheet_id):
-    """Get sheet name by sheet ID with retry logic.
+    """Get sheet name by sheet ID.
 
     Args:
         sheets_service: Google Sheets API service object.
@@ -358,50 +439,24 @@ def get_sheet_name_by_id(sheets_service, spreadsheet_id, sheet_id):
     Returns:
         Sheet name if found, None otherwise.
     """
-    max_retries = 3
-
-    for attempt in range(max_retries):
-        try:
-            result = (
-                sheets_service.spreadsheets()
-                .get(
-                    spreadsheetId=spreadsheet_id,
-                    fields="sheets.properties(sheetId,title)",
-                )
-                .execute()
-            )
-            time.sleep(API_CALL_DELAY)
-            for sheet in result.get("sheets", []):
-                if sheet["properties"]["sheetId"] == sheet_id:
-                    return sheet["properties"]["title"]
-            return None
-        except HttpError as e:
-            if e.status_code == 429 and attempt < max_retries - 1:
-                wait_time = 2**attempt
-                logger.warning(
-                    f"Rate limited getting sheet name for ID {sheet_id}, "
-                    f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})"
-                )
-                time.sleep(wait_time)
-            else:
-                logger.error(f"Failed to get sheet name for ID {sheet_id}: {e}")
-                return None
-        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
-            wait_time = 2**attempt
-            logger.warning(
-                f"Timeout getting sheet name for ID {sheet_id}, "
-                f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries}): {e}"
-            )
-            time.sleep(wait_time)
-
-    logger.error(
-        f"Failed to get sheet name for ID {sheet_id} after {max_retries} retries"
+    result = (
+        sheets_service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties(sheetId,title)",
+        )
+        .execute()
     )
+    time.sleep(API_CALL_DELAY)
+    for sheet in result.get("sheets", []):
+        if sheet["properties"]["sheetId"] == sheet_id:
+            return sheet["properties"]["title"]
     return None
 
 
+@retry_api_call
 def read_sheet_data(sheets_service, spreadsheet_id, sheet_name):
-    """Read data from a sheet tab with retry logic.
+    """Read data from a sheet tab.
 
     Args:
         sheets_service: Google Sheets API service object.
@@ -411,54 +466,29 @@ def read_sheet_data(sheets_service, spreadsheet_id, sheet_name):
     Returns:
         List of rows (lists of values).
     """
-    max_retries = 3
     # Quote sheet name for proper parsing (handles spaces and special characters)
     # Use just sheet name in quotes - API will read all data
     quoted_range = f"'{sheet_name}'"
 
-    for attempt in range(max_retries):
-        try:
-            result = (
-                sheets_service.spreadsheets()
-                .values()
-                .get(
-                    spreadsheetId=spreadsheet_id,
-                    range=quoted_range,
-                    valueRenderOption="UNFORMATTED_VALUE",
-                )
-                .execute()
-            )
-            time.sleep(API_CALL_DELAY)
-            return result.get("values", [])
-        except HttpError as e:
-            if e.resp.status == 429:  # Rate limited
-                wait_time = 2**attempt  # 1s, 2s, 4s...
-                logger.warning(
-                    f"Rate limited reading {sheet_name}, retrying in {wait_time}s "
-                    f"(attempt {attempt + 1}/{max_retries})"
-                )
-                time.sleep(wait_time)
-            else:
-                logger.error(
-                    f"Failed to read sheet {sheet_name} from {spreadsheet_id}: {e}"
-                )
-                return []
-        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
-            wait_time = 2**attempt
-            logger.warning(
-                f"Timeout reading {sheet_name}, retrying in {wait_time}s "
-                f"(attempt {attempt + 1}/{max_retries}): {e}"
-            )
-            time.sleep(wait_time)
-
-    logger.error(f"Failed to read sheet {sheet_name} after {max_retries} retries")
-    return []
+    result = (
+        sheets_service.spreadsheets()
+        .values()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            range=quoted_range,
+            valueRenderOption="UNFORMATTED_VALUE",
+        )
+        .execute()
+    )
+    time.sleep(API_CALL_DELAY)
+    return result.get("values", [])
 
 
+@retry_api_call
 def write_sheet_data(
     sheets_service, spreadsheet_id: str, sheet_name: str, values: list
 ) -> bool:
-    """Write data to a sheet tab with retry logic.
+    """Write data to a sheet tab.
 
     Creates the sheet if it doesn't exist. Clears existing content before writing.
 
@@ -471,77 +501,51 @@ def write_sheet_data(
     Returns:
         True if successful, False otherwise.
     """
-    max_retries = 3
+    spreadsheet = (
+        sheets_service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title))",
+        )
+        .execute()
+    )
 
-    for attempt in range(max_retries):
-        try:
-            spreadsheet = (
-                sheets_service.spreadsheets()
-                .get(
-                    spreadsheetId=spreadsheet_id,
-                    fields="sheets(properties(sheetId,title))",
-                )
-                .execute()
-            )
+    existing_sheet_id = None
+    for sheet in spreadsheet.get("sheets", []):
+        if sheet["properties"]["title"] == sheet_name:
+            existing_sheet_id = sheet["properties"]["sheetId"]
+            break
 
-            existing_sheet_id = None
-            for sheet in spreadsheet.get("sheets", []):
-                if sheet["properties"]["title"] == sheet_name:
-                    existing_sheet_id = sheet["properties"]["sheetId"]
-                    break
+    if existing_sheet_id is not None:
+        sheets_service.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{sheet_name}'!A:Z",
+        ).execute()
+    else:
+        request = {"addSheet": {"properties": {"title": sheet_name}}}
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id, body={"requests": [request]}
+        ).execute()
 
-            if existing_sheet_id is not None:
-                sheets_service.spreadsheets().values().clear(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"'{sheet_name}'!A:Z",
-                ).execute()
-            else:
-                request = {"addSheet": {"properties": {"title": sheet_name}}}
-                sheets_service.spreadsheets().batchUpdate(
-                    spreadsheetId=spreadsheet_id, body={"requests": [request]}
-                ).execute()
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{sheet_name}'!A1",
+        valueInputOption="USER_ENTERED",
+        body={"values": values},
+    ).execute()
 
-            sheets_service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=f"'{sheet_name}'!A1",
-                valueInputOption="USER_ENTERED",
-                body={"values": values},
-            ).execute()
-
-            logger.info(f"Successfully wrote {len(values)} rows to '{sheet_name}'")
-            return True
-
-        except HttpError as e:
-            if e.resp.status == 429:
-                wait_time = 2**attempt
-                logger.warning(
-                    f"Rate limited writing {sheet_name}, retrying in {wait_time}s "
-                    f"(attempt {attempt + 1}/{max_retries})"
-                )
-                time.sleep(wait_time)
-            else:
-                logger.error(
-                    f"Failed to write sheet {sheet_name} to {spreadsheet_id}: {e}"
-                )
-                return False
-        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
-            wait_time = 2**attempt
-            logger.warning(
-                f"Timeout writing {sheet_name}, retrying in {wait_time}s "
-                f"(attempt {attempt + 1}/{max_retries}): {e}"
-            )
-            time.sleep(wait_time)
-
-    logger.error(f"Failed to write sheet {sheet_name} after {max_retries} retries")
-    return False
+    logger.info(f"Successfully wrote {len(values)} rows to '{sheet_name}'")
+    return True
 
 
+@retry_api_call
 def upload_dataframe_to_sheet(
     sheets_service,
     spreadsheet_id: str,
     sheet_name: str,
     df: pd.DataFrame,
     raw_columns: list[int] = None,
+    move_to_first: bool = True,
 ) -> bool:
     """Upload DataFrame to Google Sheet with optional raw column handling.
 
@@ -550,6 +554,8 @@ def upload_dataframe_to_sheet(
     to preserve formatting (e.g., leading zeros in product codes).
     All other columns use valueInputOption="USER_ENTERED" for formula parsing.
 
+    By default, creates or moves the sheet to index 0 (first position).
+
     Args:
         sheets_service: Google Sheets API service object.
         spreadsheet_id: ID of the spreadsheet.
@@ -557,140 +563,130 @@ def upload_dataframe_to_sheet(
         df: pandas DataFrame to upload.
         raw_columns: Optional list of column indices (0-based) to upload as RAW.
                     e.g., [0] for first column, [1] for "Mã khách hàng".
+        move_to_first: If True, create new sheets at index 0 or move existing
+                      sheets to index 0. Default True.
 
     Returns:
         True if successful, False otherwise.
     """
-    max_retries = 3
+    spreadsheet = (
+        sheets_service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title,index))",
+        )
+        .execute()
+    )
 
-    for attempt in range(max_retries):
-        try:
-            spreadsheet = (
-                sheets_service.spreadsheets()
-                .get(
-                    spreadsheetId=spreadsheet_id,
-                    fields="sheets(properties(sheetId,title))",
-                )
-                .execute()
-            )
+    existing_sheet_id = None
+    existing_sheet_index = None
+    for sheet in spreadsheet.get("sheets", []):
+        if sheet["properties"]["title"] == sheet_name:
+            existing_sheet_id = sheet["properties"]["sheetId"]
+            existing_sheet_index = sheet["properties"]["index"]
+            break
 
-            existing_sheet_id = None
-            for sheet in spreadsheet.get("sheets", []):
-                if sheet["properties"]["title"] == sheet_name:
-                    existing_sheet_id = sheet["properties"]["sheetId"]
-                    break
+    if existing_sheet_id is not None:
+        sheets_service.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{sheet_name}'!A:Z",
+        ).execute()
 
-            if existing_sheet_id is not None:
-                sheets_service.spreadsheets().values().clear(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"'{sheet_name}'!A:Z",
-                ).execute()
-            else:
-                request = {"addSheet": {"properties": {"title": sheet_name}}}
-                sheets_service.spreadsheets().batchUpdate(
-                    spreadsheetId=spreadsheet_id, body={"requests": [request]}
-                ).execute()
+        if move_to_first and existing_sheet_index != 0:
+            move_request = {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": existing_sheet_id, "index": 0},
+                    "fields": "index",
+                }
+            }
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id, body={"requests": [move_request]}
+            ).execute()
+            time.sleep(API_CALL_DELAY)
+    else:
+        new_sheet_props = {"title": sheet_name}
+        if move_to_first:
+            new_sheet_props["index"] = 0
+        request = {"addSheet": {"properties": new_sheet_props}}
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id, body={"requests": [request]}
+        ).execute()
+        time.sleep(API_CALL_DELAY)
 
-            if raw_columns:
-                for raw_col_idx in raw_columns:
-                    col_letter = chr(65 + raw_col_idx)
-                    col_name = df.columns[raw_col_idx]
-                    col_data = df.iloc[:, raw_col_idx].astype(str).tolist()
-                    # Prepend header row
-                    col_values = [[col_name]] + [[v] for v in col_data]
+    if raw_columns:
+        for raw_col_idx in raw_columns:
+            col_letter = chr(65 + raw_col_idx)
+            col_name = df.columns[raw_col_idx]
+            col_data = df.iloc[:, raw_col_idx].astype(str).tolist()
+            # Prepend header row
+            col_values = [[col_name]] + [[v] for v in col_data]
 
-                    sheets_service.spreadsheets().values().update(
-                        spreadsheetId=spreadsheet_id,
-                        range=f"'{sheet_name}'!{col_letter}1:{col_letter}",
-                        valueInputOption="RAW",
-                        body={"values": col_values},
-                    ).execute()
-                    time.sleep(API_CALL_DELAY)
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{sheet_name}'!{col_letter}1:{col_letter}",
+                valueInputOption="RAW",
+                body={"values": col_values},
+            ).execute()
+            time.sleep(API_CALL_DELAY)
 
-                non_raw_cols = [
-                    i for i in range(len(df.columns)) if i not in raw_columns
-                ]
-                if non_raw_cols:
-                    for non_raw_col_idx in non_raw_cols:
-                        col_letter = chr(65 + non_raw_col_idx)
-                        col_name = df.columns[non_raw_col_idx]
-                        col_series = df.iloc[:, non_raw_col_idx]
+        non_raw_cols = [i for i in range(len(df.columns)) if i not in raw_columns]
+        if non_raw_cols:
+            for non_raw_col_idx in non_raw_cols:
+                col_letter = chr(65 + non_raw_col_idx)
+                col_name = df.columns[non_raw_col_idx]
+                col_series = df.iloc[:, non_raw_col_idx]
 
-                        is_numeric = pd.api.types.is_numeric_dtype(col_series)
+                is_numeric = pd.api.types.is_numeric_dtype(col_series)
 
-                        if is_numeric:
-                            col_data = col_series.fillna(0).tolist()
-                        else:
-                            col_data = (
-                                col_series.astype(object)
-                                .infer_objects(copy=False)
-                                .fillna("")
-                                .tolist()
-                            )
+                if is_numeric:
+                    col_data = col_series.fillna(0).tolist()
+                else:
+                    col_data = (
+                        col_series.astype(object)
+                        .infer_objects(copy=False)
+                        .fillna("")
+                        .tolist()
+                    )
 
-                        col_values = [[col_name]] + [[v] for v in col_data]
-
-                        sheets_service.spreadsheets().values().update(
-                            spreadsheetId=spreadsheet_id,
-                            range=f"'{sheet_name}'!{col_letter}1:{col_letter}",
-                            valueInputOption="USER_ENTERED",
-                            body={"values": col_values},
-                        ).execute()
-                        time.sleep(API_CALL_DELAY)
-            else:
-                values = [df.columns.tolist()] + df.astype(object).infer_objects(
-                    copy=False
-                ).fillna("").values.tolist()
+                col_values = [[col_name]] + [[v] for v in col_data]
 
                 sheets_service.spreadsheets().values().update(
                     spreadsheetId=spreadsheet_id,
-                    range=f"'{sheet_name}'!A1",
+                    range=f"'{sheet_name}'!{col_letter}1:{col_letter}",
                     valueInputOption="USER_ENTERED",
-                    body={"values": values},
+                    body={"values": col_values},
                 ).execute()
+                time.sleep(API_CALL_DELAY)
+    else:
+        values = [df.columns.tolist()] + df.astype(object).infer_objects(
+            copy=False
+        ).fillna("").values.tolist()
 
-            logger.info(f"Successfully uploaded {len(df)} rows to '{sheet_name}'")
-            if raw_columns:
-                logger.info(f"  Raw columns (preserved): {raw_columns}")
-            return True
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{sheet_name}'!A1",
+            valueInputOption="USER_ENTERED",
+            body={"values": values},
+        ).execute()
 
-        except HttpError as e:
-            if e.resp.status == 429:
-                wait_time = 2**attempt
-                logger.warning(
-                    f"Rate limited writing {sheet_name}, retrying in {wait_time}s "
-                    f"(attempt {attempt + 1}/{max_retries})"
-                )
-                time.sleep(wait_time)
-            else:
-                logger.error(
-                    f"Failed to write sheet {sheet_name} to {spreadsheet_id}: {e}"
-                )
-                return False
-        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
-            wait_time = 2**attempt
-            logger.warning(
-                f"Timeout writing {sheet_name}, retrying in {wait_time}s "
-                f"(attempt {attempt + 1}/{max_retries}): {e}"
-            )
-            time.sleep(wait_time)
-
-    logger.error(f"Failed to write sheet {sheet_name} after {max_retries} retries")
-    return False
+    logger.info(f"Successfully uploaded {len(df)} rows to '{sheet_name}'")
+    if raw_columns:
+        logger.info(f"  Raw columns (preserved): {raw_columns}")
+    return True
 
 
+@retry_api_call
 def copy_sheet_to_spreadsheet(
     sheets_service,
     source_spreadsheet_id: str,
     source_sheet_id: int,
     destination_spreadsheet_id: str,
-    move_to_first: bool = False,
+    move_to_first: bool = True,
 ) -> Optional[dict]:
     """Copy a sheet from one spreadsheet to another, preserving formulas.
 
     Uses the spreadsheets.sheets.copyTo API method which copies all sheet
     properties including formulas, formatting, and conditional formatting.
-    Includes retry logic with exponential backoff for network timeouts.
 
     Args:
         sheets_service: Google Sheets API service object.
@@ -702,74 +698,44 @@ def copy_sheet_to_spreadsheet(
     Returns:
         Sheet properties of the newly created sheet if successful, None otherwise.
     """
-    max_retries = 3
+    copy_request = {"destinationSpreadsheetId": destination_spreadsheet_id}
 
-    for attempt in range(max_retries):
-        try:
-            copy_request = {"destinationSpreadsheetId": destination_spreadsheet_id}
-
-            result = (
-                sheets_service.spreadsheets()
-                .sheets()
-                .copyTo(
-                    spreadsheetId=source_spreadsheet_id,
-                    sheetId=source_sheet_id,
-                    body=copy_request,
-                )
-                .execute()
-            )
-            time.sleep(API_CALL_DELAY)
-
-            new_sheet_id = result["sheetId"]
-            logger.info(
-                f"Copied sheet {source_sheet_id} from {source_spreadsheet_id} "
-                f"to {destination_spreadsheet_id} as new sheet {new_sheet_id}"
-            )
-
-            if move_to_first:
-                update_request = {
-                    "updateSheetProperties": {
-                        "properties": {"sheetId": new_sheet_id, "index": 0},
-                        "fields": "index",
-                    }
-                }
-                sheets_service.spreadsheets().batchUpdate(
-                    spreadsheetId=destination_spreadsheet_id,
-                    body={"requests": [update_request]},
-                ).execute()
-                time.sleep(API_CALL_DELAY)
-                logger.info(f"Moved sheet {new_sheet_id} to first position")
-
-            return result
-
-        except HttpError as e:
-            if e.status_code == 429 and attempt < max_retries - 1:
-                wait_time = 2**attempt
-                logger.warning(
-                    f"Rate limited copying sheet, retrying in {wait_time}s "
-                    f"(attempt {attempt + 1}/{max_retries})"
-                )
-                time.sleep(wait_time)
-            else:
-                logger.error(
-                    f"Failed to copy sheet {source_sheet_id} to {destination_spreadsheet_id}: {e}"
-                )
-                return None
-        except (TimeoutError, socket.timeout, ssl.SSLError) as e:
-            wait_time = 2**attempt
-            logger.warning(
-                f"Timeout copying sheet, retrying in {wait_time}s "
-                f"(attempt {attempt + 1}/{max_retries}): {e}"
-            )
-            time.sleep(wait_time)
-
-    logger.error(
-        f"Failed to copy sheet {source_sheet_id} to {destination_spreadsheet_id} "
-        f"after {max_retries} retries"
+    result = (
+        sheets_service.spreadsheets()
+        .sheets()
+        .copyTo(
+            spreadsheetId=source_spreadsheet_id,
+            sheetId=source_sheet_id,
+            body=copy_request,
+        )
+        .execute()
     )
-    return None
+    time.sleep(API_CALL_DELAY)
+
+    new_sheet_id = result["sheetId"]
+    logger.info(
+        f"Copied sheet {source_sheet_id} from {source_spreadsheet_id} "
+        f"to {destination_spreadsheet_id} as new sheet {new_sheet_id}"
+    )
+
+    if move_to_first:
+        update_request = {
+            "updateSheetProperties": {
+                "properties": {"sheetId": new_sheet_id, "index": 0},
+                "fields": "index",
+            }
+        }
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=destination_spreadsheet_id,
+            body={"requests": [update_request]},
+        ).execute()
+        time.sleep(API_CALL_DELAY)
+        logger.info(f"Moved sheet {new_sheet_id} to first position")
+
+    return result
 
 
+@retry_api_call
 def rename_sheet(
     sheets_service, spreadsheet_id: str, sheet_id: int, new_name: str
 ) -> bool:
@@ -802,6 +768,7 @@ def rename_sheet(
         return False
 
 
+@retry_api_call
 def delete_sheet(sheets_service, spreadsheet_id: str, sheet_id: int) -> bool:
     """Delete a sheet tab.
 
@@ -826,6 +793,7 @@ def delete_sheet(sheets_service, spreadsheet_id: str, sheet_id: int) -> bool:
         return False
 
 
+@retry_api_call
 def export_tab_to_csv(
     sheets_service, spreadsheet_id: str, sheet_name: str, csv_path: Path
 ) -> bool:
@@ -862,78 +830,72 @@ def parse_file_metadata(file_name: str) -> tuple:
     """Extract year and month from filename.
 
     Args:
-        file_name: Filename like "XUẤT NHẬP TỒN TỔNG T01.23".
+        file_name: Filename like "Xuất Nhập Tồn 2025-01" or legacy "XUẤT NHẬP TỒN TỔNG T01.23".
 
     Returns:
         Tuple of (year, month) or (None, None) if parsing fails.
     """
+    # Try new format first: "Xuất Nhập Tồn 2025-01"
+    match = re.search(r"(\d{4})-(\d{1,2})$", file_name)
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2))
+        return year, month
+
+    # Fall back to legacy format: "XUẤT NHẬP TỒN TỔNG T01.23"
     match = re.search(r"T(\d+)\.(\d+)$", file_name)
     if match:
         month = int(match.group(1))
         year = 2000 + int(match.group(2))
         return year, month
+
     return None, None
 
 
-def should_ingest_file(csv_path: Path, remote_modified_time: str) -> bool:
-    """Check if remote file is newer than local CSV.
+def validate_years(years_str: str) -> List[str]:
+    """Validate and parse comma-separated year list.
 
     Args:
-        csv_path: Path to local CSV file.
-        remote_modified_time: ISO 8601 timestamp from Google Drive.
+        years_str: Comma-separated string of years (e.g., "2024,2025")
 
     Returns:
-        True if file doesn't exist or remote is newer, False otherwise.
+        List of validated 4-digit year strings (sorted)
+
+    Raises:
+        ValueError: If any year is not a valid 4-digit year
     """
-    if not csv_path.exists():
-        return True
-
-    try:
-        local_mtime = csv_path.stat().st_mtime
-        local_dt = datetime.fromtimestamp(local_mtime, tz=timezone.utc)
-        remote_dt = datetime.fromisoformat(remote_modified_time.replace("Z", "+00:00"))
-        should_ingest = remote_dt > local_dt
-        if not should_ingest:
-            logger.debug(f"Skipped {csv_path} (local is up-to-date)")
-        return should_ingest
-    except Exception as e:
-        logger.warning(f"Could not compare timestamps for {csv_path}: {e}")
-        return False
+    years = [y.strip() for y in years_str.split(",")]
+    for year in years:
+        if not year.isdigit() or len(year) != 4:
+            raise ValueError(
+                f"Invalid year '{year}'. Years must be 4-digit numbers (e.g., 2024, 2025)"
+            )
+    return sorted(years)
 
 
-def should_ingest_import_export(
-    csv_path: Path, remote_modified_time: str, current_month: int, current_year: int
-) -> bool:
-    """Check if import/export file should be re-ingested.
-
-    Always re-ingest current month files. For other months, check if remote is newer.
+def validate_months(months_str: str) -> List[str]:
+    """Validate and parse comma-separated month list.
 
     Args:
-        csv_path: Path to local CSV file.
-        remote_modified_time: ISO 8601 timestamp from Google Drive.
-        current_month: Current month (1-12).
-        current_year: Current year (e.g., 2025).
+        months_str: Comma-separated string of months (e.g., "1,2,12" or "01,02")
 
     Returns:
-        True if file should be re-ingested, False otherwise.
+        List of validated 2-digit month strings (e.g., "01", "02", "12") (sorted)
+
+    Raises:
+        ValueError: If any month is not a valid month (1-12)
     """
-    # Extract year and month from filename (e.g., "2025_01_CT.NHAP.csv")
-    try:
-        stem = csv_path.stem  # Remove .csv extension
-        parts = stem.split("_")
-        if len(parts) < 2:
-            return True
-
-        file_year = int(parts[0])
-        file_month = int(parts[1])
-
-        # Always re-ingest current month
-        if file_year == current_year and file_month == current_month:
-            logger.debug(f"Always re-ingest current month: {csv_path}")
-            return True
-
-        # For other months, check timestamp
-        return should_ingest_file(csv_path, remote_modified_time)
-    except Exception as e:
-        logger.warning(f"Could not parse filename {csv_path}: {e}")
-        return should_ingest_file(csv_path, remote_modified_time)
+    months = [m.strip() for m in months_str.split(",")]
+    validated_months = []
+    for month in months:
+        if not month.isdigit():
+            raise ValueError(
+                f"Invalid month '{month}'. Months must be numbers (e.g., 1, 2, 12)"
+            )
+        month_num = int(month)
+        if month_num < 1 or month_num > 12:
+            raise ValueError(
+                f"Invalid month '{month}'. Months must be between 1 and 12 (e.g., 1, 2, 12)"
+            )
+        validated_months.append(f"{month_num:02d}")
+    return sorted(validated_months)

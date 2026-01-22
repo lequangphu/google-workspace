@@ -6,25 +6,26 @@ import logging
 import pandas as pd
 
 from src.modules.payable import generate_suppliers_xlsx as gs
+from src.utils.data_cleaning import clean_phone_number
 
 logger = logging.getLogger(__name__)
 
 
 class TestCleanPhoneNumber:
     def test_clean_trailing_dot(self):
-        result = gs.clean_phone_number("0912345678.")
+        result = clean_phone_number("0912345678.")
         assert result == "0912345678"
 
     def test_clean_trailing_commas(self):
-        result = gs.clean_phone_number("0912345678,;;")
+        result = clean_phone_number("0912345678,;;")
         assert result == "0912345678"
 
     def test_clean_empty(self):
-        result = gs.clean_phone_number("")
+        result = clean_phone_number("")
         assert result == ""
 
     def test_clean_none(self):
-        result = gs.clean_phone_number(None)
+        result = clean_phone_number(None)
         assert result == ""
 
 

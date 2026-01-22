@@ -16,9 +16,9 @@ from typing import Any, Dict, List, Optional
 from src.modules.google_api import (
     connect_to_drive,
     export_tab_to_csv,
-    find_sheets_in_folder,
+    find_receipt_sheets,
+    find_spreadsheet_in_folder,
     get_sheet_tabs,
-    parse_file_metadata,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,44 +46,237 @@ def load_pipeline_config() -> Dict[str, Any]:
 # Load config once at module import (ADR-1: Config-driven, not hardcoded)
 _CONFIG = load_pipeline_config()
 RAW_DATA_DIR = Path(_CONFIG["dirs"]["raw_data"])
+
 RAW_SOURCES = {
     source_key: {
         "type": source_config.get("type"),
         "description": source_config.get("description", ""),
-        "folder_ids": source_config.get("folder_ids", []),
-        "spreadsheet_id": source_config.get("spreadsheet_id", ""),
+        "root_folder_id": source_config.get("root_folder_id", ""),
+        "receipts_subfolder_name": source_config.get("receipts_subfolder_name", ""),
+        "spreadsheet_name": source_config.get("spreadsheet_name", ""),
         "tabs": source_config.get("tabs", []),
         "sheets": source_config.get("sheets", []),
         "output_subdir": source_config.get("output_subdir", ""),
-        "nested_year_folders": source_config.get("nested_year_folders", {}),
     }
     for source_key, source_config in _CONFIG.get("sources", {}).items()
 }
 
 
+def _validate_year_month_filters(
+    year_list: Optional[List[int]], month_list: Optional[List[int]]
+) -> None:
+    """Validate year (2020-2026) and month (1-12) ranges."""
+    if year_list is not None:
+        for year in year_list:
+            if year < 2020 or year > 2026:
+                logger.error(f"Invalid year: {year} (must be 2020-2026)")
+                sys.exit(1)
+
+    if month_list is not None:
+        for month in month_list:
+            if month < 1 or month > 12:
+                logger.error(f"Invalid month: {month} (must be 1-12)")
+                sys.exit(1)
+
+
+def _get_tabs_for_sheets(
+    sheets_service, spreadsheet_ids: List[str]
+) -> Dict[str, List[str]]:
+    """Get tabs from spreadsheets using individual API calls."""
+    tabs_dict = {}
+    for spreadsheet_id in spreadsheet_ids:
+        try:
+            tabs = get_sheet_tabs(sheets_service, spreadsheet_id)
+            tabs_dict[spreadsheet_id] = tabs
+        except Exception as e:
+            logger.error(f"Error getting tabs for {spreadsheet_id}: {e}")
+            raise  # Re-raise to maintain fail-fast behavior
+    return tabs_dict
+
+
+def _find_spreadsheets_batch(
+    drive_service, spreadsheet_sources: List[tuple]
+) -> Dict[str, str]:
+    """Find spreadsheets using individual API calls."""
+    spreadsheet_ids = {}
+    for source_key, folder_id, name in spreadsheet_sources:
+        spreadsheet_ids[source_key] = find_spreadsheet_in_folder(
+            drive_service, folder_id, name
+        )
+    return spreadsheet_ids
+
+
+def _export_sheet_tabs(
+    sheets_service,
+    sheet_id: str,
+    sheet_name: str,
+    tabs_dict: Dict[str, List[str]],
+    desired_tabs: List[str],
+    output_subdir: str = "",
+) -> int:
+    """Export matching tabs to CSV files."""
+    tabs = tabs_dict.get(sheet_id, [])
+    if not tabs:
+        logger.warning(f"No tabs found in {sheet_name}")
+        return 0
+
+    tabs_to_process = set(tabs) & set(desired_tabs)
+    files_ingested = 0
+
+    for tab in tabs_to_process:
+        csv_path = (
+            RAW_DATA_DIR / output_subdir / f"{tab}.csv"
+            if output_subdir
+            else RAW_DATA_DIR / "import_export" / f"{tab}.csv"
+        )
+
+        try:
+            if export_tab_to_csv(sheets_service, sheet_id, tab, csv_path):
+                logger.info(f"Exported {csv_path}")
+                files_ingested += 1
+        except Exception as e:
+            logger.error(f"Error exporting {tab} from {sheet_name}: {e}")
+            raise  # Re-raise to maintain fail-fast behavior
+
+    return files_ingested
+
+
+def _process_import_export_receipts(
+    drive_service,
+    sheets_service,
+    year_list: Optional[List[int]],
+    month_list: Optional[List[int]],
+) -> tuple[int, int]:
+    """Handle folder-based import_export_receipts source."""
+    files_ingested = 0
+    error_count = 0
+
+    logger.info("=" * 70)
+    logger.info("Processing: import_export_receipts (unified folder structure)")
+
+    import_export_config = RAW_SOURCES["import_export_receipts"]
+    desired_tabs = import_export_config["tabs"]
+
+    logger.info(
+        f"Discovering receipts spreadsheets from '{import_export_config['receipts_subfolder_name']}'"
+    )
+
+    # Discover spreadsheets with filtering using shared function
+    try:
+        sheets = find_receipt_sheets(
+            drive_service,
+            import_export_config,
+            year_list,
+            month_list,
+        )
+    except FileNotFoundError as e:
+        logger.error(f"{e}")
+        return 0, 1
+
+    if not sheets:
+        logger.warning("No receipts spreadsheets found")
+        return 0, 0
+
+    logger.info(f"Found {len(sheets)} spreadsheet(s) matching filters")
+
+    # Get tabs for all sheets
+    spreadsheet_ids = [sheet["id"] for sheet in sheets]
+    try:
+        tabs_dict = _get_tabs_for_sheets(sheets_service, spreadsheet_ids)
+    except Exception as e:
+        logger.error(
+            f"Failed to get tabs for import_export_receipts: {e}", exc_info=True
+        )
+        error_count += 1
+        return files_ingested, error_count
+
+    # Process each sheet
+    for sheet in sheets:
+        file_id = sheet["id"]
+        file_name = sheet["name"]
+        year_num = sheet["year"]
+        month = sheet["month"]
+
+        # Export tabs with year_month prefix for import_export
+        tabs = tabs_dict.get(file_id, [])
+        if not tabs:
+            logger.warning(f"No tabs found in {file_name}")
+            continue
+
+        tabs_to_process = set(tabs) & set(desired_tabs)
+
+        for tab in tabs_to_process:
+            csv_path = RAW_DATA_DIR / "import_export" / f"{year_num}_{month}_{tab}.csv"
+
+            try:
+                if export_tab_to_csv(sheets_service, file_id, tab, csv_path):
+                    logger.info(f"Exported {csv_path}")
+                    files_ingested += 1
+            except Exception as e:
+                logger.error(f"Error exporting {tab} from {file_name}: {e}")
+                error_count += 1
+                raise  # Maintain fail-fast behavior
+
+    return files_ingested, error_count
+
+
+def _process_spreadsheet_source(
+    drive_service, sheets_service, source_key: str, spreadsheet_ids: Dict[str, str]
+) -> tuple[int, int]:
+    """Handle direct spreadsheet sources (receivable, payable, cashflow)."""
+    files_ingested = 0
+    error_count = 0
+
+    source_config = RAW_SOURCES[source_key]
+    logger.info("=" * 70)
+    logger.info(f"Processing: {source_key}")
+
+    spreadsheet_id = spreadsheet_ids.get(source_key)
+
+    if not spreadsheet_id:
+        logger.error(f"Could not find spreadsheet for {source_key}")
+        error_count += 1
+        return 0, error_count
+
+    logger.info(f"Found {source_key} spreadsheet: {spreadsheet_id}")
+
+    output_subdir = source_config["output_subdir"]
+
+    # Handle sheets configuration
+    if "sheets" in source_config:
+        # New format: list of sheets with custom output filenames
+        for sheet_info in source_config["sheets"]:
+            sheet_name = sheet_info["name"]
+            output_file = sheet_info["output_file"]
+            csv_path = RAW_DATA_DIR / output_subdir / f"{output_file}.csv"
+            try:
+                if export_tab_to_csv(
+                    sheets_service, spreadsheet_id, sheet_name, csv_path
+                ):
+                    files_ingested += 1
+            except Exception as e:
+                logger.error(f"Error exporting {sheet_name} from {source_key}: {e}")
+                error_count += 1
+                raise  # Maintain fail-fast behavior
+
+    return files_ingested, error_count
+
+
 def ingest_from_drive(
     sources: Optional[List[str]] = None,
-    test_mode: bool = False,
-    clean_up: bool = False,
     year_list: Optional[List[int]] = None,
     month_list: Optional[List[int]] = None,
-    tab_list: Optional[List[str]] = None,
 ) -> int:
     """Download Google Sheets from Drive and export to data/00-raw/.
 
     Args:
         sources: List of raw sources to ingest. If None, ingest all.
-        test_mode: Stop after downloading one of each tab type.
-        clean_up: Remove existing data/00-raw/ directory first.
         year_list: Filter by year folder (e.g., [2024, 2025]). If None, ingest all years.
         month_list: Filter by month (1-12). If None, ingest all months.
-        tab_list: Filter by tab name (e.g., ["CT.NHAP", "CT.XUAT"]). If None, ingest all tabs.
 
     Returns:
         Number of files ingested.
     """
-    import shutil
-
     if sources is None:
         sources = list(RAW_SOURCES.keys())
 
@@ -103,227 +296,57 @@ def ingest_from_drive(
 
     logger.info("Connected successfully!")
 
-    if year_list is not None:
-        for year in year_list:
-            if year < 2020 or year > 2026:
-                logger.error(f"Invalid year: {year} (must be 2020-2026)")
-                sys.exit(1)
-
-    if month_list is not None:
-        for month in month_list:
-            if month < 1 or month > 12:
-                logger.error(f"Invalid month: {month} (must be 1-12)")
-                sys.exit(1)
-
-    tab_shorthands = {
-        "nhap": "CT.NHAP",
-        "xuat": "CT.XUAT",
-        "xnt": "XNT",
-        "ct.nhap": "CT.NHAP",
-        "ct.xuat": "CT.XUAT",
-    }
-
-    if tab_list is not None:
-        expanded_tabs = []
-        valid_tabs = RAW_SOURCES["import_export_receipts"]["tabs"]
-        for tab in tab_list:
-            tab_lower = tab.lower()
-            if tab_lower in tab_shorthands:
-                expanded_tabs.append(tab_shorthands[tab_lower])
-            elif tab in valid_tabs:
-                expanded_tabs.append(tab)
-            else:
-                logger.warning(
-                    f"Tab '{tab}' not found in configuration (available: {valid_tabs})"
-                )
-        tab_list = expanded_tabs if expanded_tabs else None
-
-    if clean_up and RAW_DATA_DIR.exists():
-        shutil.rmtree(RAW_DATA_DIR)
-        logger.info(f"Cleared {RAW_DATA_DIR}/")
+    # Validate filters
+    _validate_year_month_filters(year_list, month_list)
 
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     files_ingested = 0
     error_count = 0
 
-    # Process import_export_receipts (folder-based, multiple files/tabs)
+    # Process import_export_receipts
     if "import_export_receipts" in sources:
-        logger.info("=" * 70)
-        logger.info(
-            "Processing: import_export_receipts (7 shared folders + year folders)"
-        )
-
-        tabs_processed = set()
-        desired_tabs = RAW_SOURCES["import_export_receipts"]["tabs"]
-
-        def process_sheets_from_folder(
-            folder_id,
-            source_name,
-            year_folder_name=None,
-            year_list=None,
-            month_list=None,
-            tab_list=None,
-        ):
-            """Process all sheets in a folder, applying filters."""
-            nonlocal files_ingested, tabs_processed, error_count
-
-            folder_display = year_folder_name if year_folder_name else "Shared"
-            logger.info(f"Processing folder: {folder_display}")
-            logger.info(
-                f"  Filters: year={year_list}, month={month_list}, tab={tab_list}"
+        try:
+            receipts_files, receipts_errors = _process_import_export_receipts(
+                drive_service, sheets_service, year_list, month_list
             )
+            files_ingested += receipts_files
+            error_count += receipts_errors
+        except Exception as e:
+            logger.error(
+                f"Failed to process import_export_receipts: {e}", exc_info=True
+            )
+            error_count += 1
+            return files_ingested  # Fail-fast on import_export_receipts errors
 
-            # Get sheets from Drive API
-            try:
-                sheets = find_sheets_in_folder(drive_service, folder_id)
-            except Exception as e:
-                logger.error(f"Error listing sheets in {source_name}: {e}")
-                error_count += 1
-                return True  # Stop on first error (fail-fast)
+    # Prepare spreadsheet sources for batch discovery
+    spreadsheet_sources = []
+    for source_key in ["receivable", "payable", "cashflow"]:
+        if source_key not in sources:
+            continue
+        source_config = RAW_SOURCES[source_key]
+        root_folder_id = source_config.get("root_folder_id")
+        spreadsheet_name = source_config.get("spreadsheet_name")
+        if root_folder_id and spreadsheet_name:
+            spreadsheet_sources.append((source_key, root_folder_id, spreadsheet_name))
 
-            if not sheets:
-                logger.debug(f"No sheets found in {source_name}")
-                return False
+    # Batch discover spreadsheets
+    spreadsheet_ids = _find_spreadsheets_batch(drive_service, spreadsheet_sources)
 
-            for sheet in sheets:
-                file_name = sheet["name"]
-                file_id = sheet["id"]
-
-                # Parse year/month from filename
-                year_num, month = parse_file_metadata(file_name)
-
-                if year_num is None:
-                    logger.debug(f"Skipping {file_name}: invalid metadata")
-                    continue
-
-                # Apply year filter (check both year folder name and parsed year)
-                if year_list is not None:
-                    year_from_folder = (
-                        year_folder_name if year_folder_name else year_num
-                    )
-                    if year_from_folder not in year_list:
-                        logger.debug(
-                            f"Skipping {file_name}: year {year_from_folder} not in filter {year_list}"
-                        )
-                        continue
-
-                # Apply month filter
-                if month_list is not None and month not in month_list:
-                    logger.debug(
-                        f"Skipping {file_name}: month {month} not in filter {month_list}"
-                    )
-                    continue
-
-                # Get available tabs
-                try:
-                    tabs = get_sheet_tabs(sheets_service, file_id)
-                except Exception as e:
-                    logger.error(f"Error getting tabs for {file_name}: {e}")
-                    error_count += 1
-                    return True  # Stop on first error (fail-fast)
-
-                if not tabs:
-                    logger.warning(f"No tabs found in {file_name}")
-                    continue
-
-                # Determine which tabs to process
-                if tab_list is not None:
-                    # Apply tab filter
-                    tabs_to_process = set(tabs) & set(tab_list)
-                else:
-                    # Use configured desired tabs
-                    tabs_to_process = set(tabs) & set(desired_tabs)
-
-                for tab in tabs_to_process:
-                    csv_path = (
-                        RAW_DATA_DIR / "import_export" / f"{year_num}_{month}_{tab}.csv"
-                    )
-
-                    try:
-                        if export_tab_to_csv(sheets_service, file_id, tab, csv_path):
-                            logger.info(f"Exported {csv_path}")
-                            files_ingested += 1
-                            tabs_processed.add(tab)
-
-                            if test_mode and len(tabs_processed) >= len(desired_tabs):
-                                logger.info("Test mode: Downloaded all tab types")
-                                return True
-                    except Exception as e:
-                        logger.error(f"Error exporting {tab} from {file_name}: {e}")
-                        error_count += 1
-                        return True  # Stop on first error (fail-fast)
-
-            return False
-
-        # Process import_export_receipts folders from config
-        import_export_config = RAW_SOURCES["import_export_receipts"]
-        nested_year_folders = import_export_config.get("nested_year_folders", {})
-
-        for idx, folder_id in enumerate(import_export_config["folder_ids"], 1):
-            logger.info(f"Scanning folder {idx}: {folder_id}...")
-
-            # Check if this folder has nested year structure
-            if folder_id in nested_year_folders:
-                # Process nested year folders for this parent folder
-                year_folders_map = nested_year_folders[folder_id]
-                logger.info(
-                    f"Folder has nested year structure: {len(year_folders_map)} year folders"
-                )
-
-                for year_num, year_folder_id in year_folders_map.items():
-                    year_folder_name = f"Year {year_num}"
-                    logger.info(f"Processing {year_folder_name} folder...")
-
-                    if process_sheets_from_folder(
-                        year_folder_id,
-                        year_folder_name,
-                        year_num,
-                        year_list,
-                        month_list,
-                        tab_list,
-                    ):
-                        logger.info("Stopped processing year folders (fail-fast)")
-                        break
-            else:
-                # Process as regular folder (no nested structure)
-                if process_sheets_from_folder(
-                    folder_id, f"Folder {idx}", None, None, None, None
-                ):
-                    break
-
-    # Process direct spreadsheets (receivable, payable, cashflow)
+    # Process each spreadsheet source
     for source_key in ["receivable", "payable", "cashflow"]:
         if source_key not in sources:
             continue
 
-        source_config = RAW_SOURCES[source_key]
-        logger.info("=" * 70)
-        logger.info(f"Processing: {source_key}")
-
-        spreadsheet_id = source_config["spreadsheet_id"]
-        output_subdir = source_config["output_subdir"]
-
-        # Handle both old format (single sheet_name) and new format (multiple sheets)
-        if "sheets" in source_config:
-            # New format: list of sheets with custom output filenames
-            for sheet_info in source_config["sheets"]:
-                sheet_name = sheet_info["name"]
-                output_file = sheet_info["output_file"]
-                csv_path = RAW_DATA_DIR / output_subdir / f"{output_file}.csv"
-                if export_tab_to_csv(
-                    sheets_service, spreadsheet_id, sheet_name, csv_path
-                ):
-                    files_ingested += 1
-        else:
-            # Legacy format: single sheet_name
-            sheet_name = source_config.get("sheet_name")
-            if sheet_name:
-                csv_path = RAW_DATA_DIR / output_subdir / f"{source_key}.csv"
-                if export_tab_to_csv(
-                    sheets_service, spreadsheet_id, sheet_name, csv_path
-                ):
-                    files_ingested += 1
+        try:
+            source_files, source_errors = _process_spreadsheet_source(
+                drive_service, sheets_service, source_key, spreadsheet_ids
+            )
+            files_ingested += source_files
+            error_count += source_errors
+        except Exception as e:
+            logger.error(f"Failed to process {source_key}: {e}", exc_info=True)
+            error_count += 1
 
     logger.info("=" * 70)
     logger.info(
@@ -339,6 +362,9 @@ def ingest_from_drive(
 
 if __name__ == "__main__":
     import argparse
+
+    # Suppress googleapiclient file_cache warning (oauth2client<4.0.0 required)
+    logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -368,19 +394,10 @@ if __name__ == "__main__":
    # Filter by year (only 2024 files)
    uv run src/modules/ingest.py --only import_export_receipts --year 2024
 
-   # Filter by year and month (only 2024, January files)
-   uv run src/modules/ingest.py --only import_export_receipts --year 2024 --month 1
+    # Filter by year and month (only 2024, January files)
+    uv run src/modules/ingest.py --only import_export_receipts --year 2024 --month 1
 
-   # Filter by tab (only CT.NHAP and CT.XUAT)
-   uv run src/modules/ingest.py --only import_export_receipts --tab nhap --tab xuat
-
-   # Use tab shorthands (nhap→CT.NHAP, xuat→CT.XUAT, xnt→XNT)
-   uv run src/modules/ingest.py --only import_export_receipts --tab nhap
-
-   # Combine filters (year 2024, month 1, tab nhap)
-   uv run src/modules/ingest.py --only import_export_receipts --year 2024 --month 1 --tab nhap
-
-   Available sources: {}
+    Available sources: {}
         """.format(", ".join(sorted(RAW_SOURCES.keys()))),
     )
 
@@ -397,16 +414,6 @@ if __name__ == "__main__":
         help="Comma-separated list of sources to skip (e.g., import_export_receipts)",
     )
     parser.add_argument(
-        "--test-mode",
-        action="store_true",
-        help="Stop after downloading one of each tab type",
-    )
-    parser.add_argument(
-        "--cleanup",
-        action="store_true",
-        help="Remove existing data/00-raw/ directory first",
-    )
-    parser.add_argument(
         "--year",
         type=int,
         action="append",
@@ -419,18 +426,6 @@ if __name__ == "__main__":
         action="append",
         default=None,
         help="Filter by month (1-12, can be specified multiple times, e.g., --month 1 --month 2)",
-    )
-    parser.add_argument(
-        "--tab",
-        type=str,
-        action="append",
-        default=None,
-        help="Filter by tab name (case-insensitive shorthands: nhap→CT.NHAP, xuat→CT.XUAT, xnt→XNT; can be specified multiple times)",
-    )
-    parser.add_argument(
-        "--validate-args",
-        action="store_true",
-        help="Validate arguments and exit without connecting to Drive",
     )
 
     args = parser.parse_args()
@@ -470,29 +465,9 @@ if __name__ == "__main__":
         logger.info(f"Skipping: {', '.join(skip_sources)}")
         logger.info(f"Ingesting: {', '.join(sources_to_ingest)}")
 
-    # Validate args mode: exit early without connecting to Drive
-    if args.validate_args:
-        logger.info("=" * 70)
-        logger.info("ARGUMENT VALIDATION MODE")
-        logger.info("=" * 70)
-        if sources_to_ingest is None:
-            sources_to_ingest = list(RAW_SOURCES.keys())
-        logger.info(f"Sources to ingest: {sources_to_ingest}")
-        logger.info(f"Test mode: {args.test_mode}")
-        logger.info(f"Cleanup: {args.cleanup}")
-        logger.info(f"Year filter: {args.year}")
-        logger.info(f"Month filter: {args.month}")
-        logger.info(f"Tab filter: {args.tab}")
-        logger.info("=" * 70)
-        logger.info("Arguments validated successfully. No API calls made.")
-        sys.exit(0)
-
     # Run ingestion
     ingest_from_drive(
         sources=sources_to_ingest,
-        test_mode=args.test_mode,
-        clean_up=args.cleanup,
         year_list=args.year,
         month_list=args.month,
-        tab_list=args.tab,
     )

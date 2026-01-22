@@ -1,134 +1,144 @@
-# Tire Shop ERP Migration - AI Agent Knowledge Base
+# Agent Guidelines
 
-**Generated**: January 4, 2026
-**Project**: Data pipeline for migrating Google Sheets → KiotViet ERP
+This file provides build commands, testing instructions, and code style guidelines for AI agents working on this codebase.
 
-## OVERVIEW
-Python data pipeline ingesting business data from Google Sheets, transforming by raw data source, validating against ERP templates, and exporting to XLSX files.
+## Build / Lint / Test Commands
 
-## STRUCTURE
-```
-./
-├── src/
-│   ├── modules/          # Raw data source modules (import_export_receipts, receivable, payable)
-│   ├── erp/              # Template definitions & XLSX export functions
-│   └── pipeline/         # Orchestrator with CLI for running full pipeline
-├── tests/                # Real-data integration tests (no mocks)
-├── legacy/               # Deprecated scripts (reference only)
-├── data/                 # 4-stage data flow: 00-raw → 01-staging → 02-validated → 03-erp-export
-├── docs/                 # ADRs, I/O mapping, refactoring roadmap
-└── pipeline.toml         # Central config (paths, IDs, sources, migration filters)
-```
-
-## WHERE TO LOOK
-| Task | Location | Notes |
-|------|----------|-------|
-| Run full pipeline | `src/pipeline/orchestrator.py` | CLI: `uv run src/pipeline/orchestrator.py [--step transform] [--period 2025_01]` |
-| Ingest from Drive | `src/modules/ingest.py` | Uses `src/modules/google_api.py` for auth & manifest caching |
-| Products/PriceBook | `src/modules/import_export_receipts/` | Complex FIFO costing, Google Sheets enrichment |
-| Customers | `src/modules/receivable/generate_customers_xlsx.py` | Phone cleaning, debt aggregation |
-| Suppliers | `src/modules/payable/generate_suppliers_xlsx.py` | Phone cleaning, supplier master |
-| ERP templates | `src/erp/templates.py` | KiotViet 27-column template definitions |
-| XLSX export | `src/erp/exporter.py` | Validates before export (never write directly) |
-| Test patterns | `tests/` | Test on real CSVs from `data/00-raw/` only |
-
-## CONVENTIONS (Deviation from Standard)
-
-### Module Organization
-- Group by **raw data source** (import_export_receipts, receivable, payable) NOT by processing phase
-- Each `.py` file **< 300 lines** (strong safety preference)
-- Test file per module: `tests/test_<raw_source>_<script>.py`
-
-### Naming
-| What | Pattern | Example |
-|------|---------|---------|
-| Functions & files | snake_case | `clean_receipts_purchase.py`, `extract_products()` |
-| Classes | PascalCase | `ERPTemplate`, `DataValidator` |
-| KiotViet columns | Exact Vietnamese, case-sensitive | "Mã hàng", "Tên hàng", "Nhóm hàng(3 Cấp)" |
-| Config keys | snake_case | `erp_export`, `bundle_modules` |
-
-### Tooling
-- ONLY `uv` commands: `uv run script.py`, `uv run pytest`, `uv add package_name`, `uv sync`
-- FORBIDDEN: `python`, `pip`, `poetry` (all variants)
-
-### Git Workflow
-- Branch: `feature/<description>`, `bugfix/<description>`, `refactor/<description>`, `docs/<description>`
-- Commit: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`
-- Pre-commit: `uv run pytest tests/ -v`, `uv run ruff format src/ tests/`, `uv run ruff check src/`
-
-### Code Patterns
-- Transformations: Validate before export using `ERPTemplateRegistry.validate_dataframe()`
-- Paths: Always use `pathlib.Path` (not `os.path` or strings)
-- Logging: Major steps with `logger.info("=" * 70)` separator
-
-## ANTI-PATTERNS (This Project)
-
-### Data Handling
-- ❌ Hardcode paths/IDs/periods → only from `pipeline.toml`
-- ❌ Skip row tracking
-- ❌ Write directly to `data/03-erp-export/` → always: staging → validate → promote
-- ❌ Test on mock data → **only real CSV files from `/data/00-raw/`**
-- ❌ Silently skip errors → always log reason
-- ❌ Migrate script without testing on raw data → **always run on real data before commit**
-
-### File Management
-- ❌ Create new `.md` files (except in `docs/`)
-
-### Architecture
-- ❌ Group modules by processing phase
-- ❌ Use `python`, `pip`, `poetry` commands
-
-## UNIQUE STYLES
-
-### Pipeline Flow
-4-stage invariant: **Ingest (Google Drive) → Transform (by raw source) → Validate → Export XLSX**
-- `data/00-raw/` - Downloaded CSVs
-- `data/01-staging/` - Versioned transforms
-- `data/02-validated/` - Ready for export
-- `data/03-erp-export/` - Final XLSX only
-
-### External Enrichment
-Product lookup from Google Sheets (Nhóm hàng, Thương hiệu):
-- Spreadsheet ID: `16bGN2gjWspCqlFD4xB--7WtkYtTpDaWzRQx9sV97ed8`
-- Used by: `extract_products.py`
-
-### Legacy Migration
-100% complete. All legacy scripts in `./legacy/` deprecated, migrated to `src/modules/`. See `docs/refactoring-roadmap.md`.
-
-## COMMANDS
 ```bash
-# Development
-uv sync                              # Install dependencies
-uv run src/pipeline/orchestrator.py  # Run full pipeline
-uv run pytest tests/ -v              # Run all tests
-uv run pytest tests/test_<module>_*.py -v  # One module
+# Run all tests
+pytest
 
-# Quality (pre-commit)
-uv run ruff format src/ tests/       # Format code
-uv run ruff check src/               # Lint code
+# Run single test file
+pytest tests/test_ingest.py
 
-# Module examples
-uv run src/modules/ingest.py         # Ingest only
-uv run src/modules/import_export_receipts/clean_inventory.py  # Clean inventory
+# Run specific test
+pytest tests/test_ingest.py::TestParseFileMetadata::test_valid_metadata
+
+# Run tests matching pattern
+pytest tests/test_ingest.py -k "parse"
+
+# Run with verbose output
+pytest -v
+
+# Lint code
+ruff check .
+
+# Format code
+ruff format .
+
+# Run orchestrator (full pipeline)
+uv run src/pipeline/orchestrator.py
+
+# Run orchestrator with specific modules
+uv run src/pipeline/orchestrator.py -m ier
+
+# Run specific steps
+uv run src/pipeline/orchestrator.py -s ingest,transform
+uv run src/pipeline/orchestrator.py -t  # transform only
+uv run src/pipeline/orchestrator.py -e  # export only
+
+# Run module scripts directly
+uv run src/modules/ingest.py
+uv run src/modules/receivable/generate_customers_xlsx.py
 ```
 
-## NOTES
+## Code Style Guidelines
 
-### Gotchas
-- AGENTS.md references `src/cli.py` which **doesn't exist** - entry point is `src/pipeline/orchestrator.py`
-- `orchestrator.py` (996 lines) violates 300-line limit - contains CLI, pipeline logic, and Google Drive integration
-- `extract_products.py` (1370 lines) deprecated but not removed - see `generate_products_xlsx.py`
-- Legacy scripts can write directly to `data/03-erp-export/` (violates staging pattern)
-- Sensitive files (credentials.json, token.json) never committed
-- Configuration partially hardcoded in `orchestrator.py` - violates ADR-1 (config-driven)
+### File Headers
+- Files with Vietnamese text must include: `# -*- coding: utf-8 -*-`
+- Start with module-level docstring explaining purpose
+- Include source data references where applicable
 
-### Complex Modules
-- `src/modules/import_export_receipts/` - Multi-month consolidation, FIFO costing, reconciliation reporting
-- `src/pipeline/orchestrator.py` - Central controller with fallback to legacy scripts
-- `src/modules/google_api.py` - Manifest caching, request throttling, exponential backoff
+### Imports
+```python
+# Standard library first
+import logging
+import sys
+from pathlib import Path
+from typing import Optional, List, Dict
 
-### Testing Evidence
-Every PR requires:
-- All tests green on real data from `data/00-raw/`
-- Lint & type check pass
-- Diff confined to agreed paths
+# Third-party imports next
+import pandas as pd
+from openpyxl import Workbook
+
+# Local imports last (src.*)
+from src.modules.google_api import connect_to_drive
+from src.utils.staging_cache import StagingCache
+```
+
+### Type Hints
+- Use type hints for function signatures: `def process(data: pd.DataFrame) -> Optional[Path]:`
+- Import from `typing`: `Optional`, `List`, `Dict`, `Any`, `TypedDict`
+- Use `from pathlib import Path` for file paths
+
+### Naming Conventions
+- Functions/variables: `snake_case`
+- Classes: `PascalCase`
+- Constants: `UPPER_SNAKE_CASE`
+- Module-level configs: `_CONFIG` (private), `CONFIG` (public)
+
+### Docstrings
+```python
+def process_data(source: pd.DataFrame) -> Optional[dict]:
+    """Process data from source.
+
+    Args:
+        source: Input DataFrame with columns 'code', 'name'.
+
+    Returns:
+        Dict with 'processed' DataFrame and 'errors' list, or None on failure.
+    """
+```
+
+### Error Handling
+- Use `try/except` blocks with logging
+- Catch specific exceptions where possible
+- Return `None` or empty results on non-critical failures
+- Raise on critical failures that should stop execution
+- Use `logger.error()` for errors, `logger.warning()` for warnings
+
+### Logging
+- Initialize at module level: `logger = logging.getLogger(__name__)`
+- Use structured logging with context
+- Log before API calls, after successful operations, on errors
+
+### Configuration
+- Load from `pipeline.toml` using `tomllib.load()`
+- Store config in module-level variables: `_CONFIG = load_pipeline_config()`
+- Provide defaults when config missing: `_CONFIG.get("key", "default")`
+
+### Path Handling
+- Use `Path` objects from `pathlib`
+- Use `get_workspace_root()` from `src.utils` for project root
+- Use `Path.cwd()` when running scripts directly
+
+### Testing
+- Use pytest with `@pytest.fixture` for common setup
+- Mock Google Drive API to prevent actual calls
+- Use descriptive test names
+- Group tests in classes by functionality
+- Mock external dependencies: `@patch("src.modules.google_api.connect_to_drive")`
+
+### Pandas / Data Processing
+- Use `pd.to_numeric(..., errors="coerce")` for safe numeric conversion
+- Handle missing values: `df.fillna("")` for strings, `df.fillna(0)` for numeric
+- Use `df.astype(str).str.strip()` for text cleaning
+- Use `df.drop_duplicates()` to deduplicate
+
+### Google API
+- Rate limit: respect `API_CALL_DELAY = 0.5` between calls
+- Use `@retry_api_call` decorator for retry logic
+- Handle `HttpError` with appropriate logging
+- Use batch operations for multiple files where possible
+
+### Module Patterns
+- Scripts should have a `process()` function that accepts optional parameters
+- Return `Path` to output file on success, `None` on failure
+- Use `write_to_sheets=False` parameter to control Google Sheets upload
+- Include `staging_dir: Optional[Path]` parameter for custom staging paths
+
+### XLSX Generation
+- Use `src.utils.xlsx_formatting.XLSXFormatter` for Excel output
+- Follow KiotViet templates in `src.erp.templates` module
+- Apply styling: headers with bold font, gray background, centered alignment
+- Write to `data/03-erp-export/` directory

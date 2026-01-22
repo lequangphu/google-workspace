@@ -25,11 +25,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from src.modules.import_export_receipts.product_disambiguation import (
-    disambiguate_product_codes,
-    log_disambiguation_summary,
-)
-
 # ============================================================================
 # LOGGING SETUP
 # ============================================================================
@@ -640,62 +635,14 @@ def transform_purchase_receipts(
         columns={"_source_file_month": "Tháng", "_source_file_year": "Năm"}
     )
 
-    # Step 9: Clean product names (Phase 1 & 2)
-    from src.modules.import_export_receipts.clean_product_names_core import (
-        clean_product_name,
-        standardize_product_type,
-    )
-    from src.modules.import_export_receipts.product_disambiguation import (
-        extract_brand_from_name,
-    )
-
+    # Product name cleaning/unification: Skipped
+    # (Handled by refine_product_master.py if -cn/-un flags used)
     logger.info("=" * 70)
-    logger.info("Step 9: Cleaning product names (Phase 1 & 2)")
+    logger.info("Product name cleaning/unification: Skipped")
+    logger.info("(Handled by refine_product_master.py if -cn/-un flags used)")
     logger.info("=" * 70)
 
-    if "Tên hàng" in final_combined_df.columns:
-        # Apply Phase 1+2 cleaning
-        final_combined_df["Tên hàng_clean"] = final_combined_df["Tên hàng"].apply(
-            lambda n: standardize_product_type(clean_product_name(n))
-        )
-
-        # Extract brand information
-        final_combined_df["Brand"] = final_combined_df["Tên hàng_clean"].apply(
-            extract_brand_from_name
-        )
-
-        # Log cleaning summary
-        cleaned_count = (
-            final_combined_df["Tên hàng"] != final_combined_df["Tên hàng_clean"]
-        ).sum()
-        unique_brands = final_combined_df["Brand"].nunique()
-        logger.info(f"Cleaned {cleaned_count} product names")
-        logger.info(f"Unique brands: {unique_brands}")
-
-    # Step 9: Disambiguate product codes
-    logger.info("=" * 70)
-    logger.info("Step 9: Disambiguating product codes")
-    logger.info("=" * 70)
-    final_combined_df, disambig_stats = disambiguate_product_codes(
-        final_combined_df,
-        code_col="Mã hàng",
-        name_col="Tên hàng_clean",
-        date_col="Ngày",
-    )
-    log_disambiguation_summary(disambig_stats)
-
-    # Intentional: Replace original Tên hàng with cleaned version after disambiguation.
-    # The original uncleaned names are no longer needed - all downstream processing
-    # uses the standardized, cleaned names for consistency.
-    # Drop original "Tên hàng" before renaming to avoid duplicate columns
-    if (
-        "Tên hàng" in final_combined_df.columns
-        and "Tên hàng_clean" in final_combined_df.columns
-    ):
-        final_combined_df = final_combined_df.drop(columns=["Tên hàng"])
-    final_combined_df = final_combined_df.rename(columns={"Tên hàng_clean": "Tên hàng"})
-
-    # Step 10: Standardize column types
+    # Step 8: Standardize column types
     final_combined_df = standardize_column_types(final_combined_df)
 
     # Step 11: Reorder and sort columns

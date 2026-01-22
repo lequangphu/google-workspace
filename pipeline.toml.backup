@@ -15,16 +15,17 @@ steps = ["ingest", "transform", "validate", "export"]
 [sources.import_export_receipts]
 type = "folder"
 description = "Import/Export Receipts: Year/month files with CT.NHAP, CT.XUAT, XNT tabs"
-root_folder_id = "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
-receipts_subfolder_name = "Xuất Nhập Tồn 2020-2025"
+folder_ids = [
+    "1RbkY2dd1IaqSHhnivjh6iejKv9mpkSJ_",  # Folder 1 (oldest)
+    "1QIP6LCr6lANzzRnAZPmVg7wIWdUmhs6q",  # Folder 2
+    "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj",  # Folder 3 (most recent/active)
+]
 tabs = ["CT.NHAP", "CT.XUAT", "XNT"]
 output_subdir = "import_export"
 
 [sources.receivable]
 type = "spreadsheet"
 description = "Receivable: customer debt ledger + customer info"
-root_folder_id = "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
-spreadsheet_name = "Receivable.xlsx"
 spreadsheet_id = "1kouZwJy8P_zZhjjn49Lfbp3KN81mhHADV7VKDhv5xkM"
 output_subdir = "receivable"
 
@@ -39,8 +40,6 @@ output_file = "receivable_customers"
 [sources.payable]
 type = "spreadsheet"
 description = "Payable: supplier master + debt ledger"
-root_folder_id = "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
-spreadsheet_name = "Payable.xlsx"
 spreadsheet_id = "1b4LWWyfddfiMZWnFreTyC-epo17IR4lcbUnPpLW8X00"
 output_subdir = "payable"
 
@@ -55,8 +54,7 @@ output_file = "payable_summary"
 [sources.cashflow]
 type = "spreadsheet"
 description = "CashFlow: deposits and cash transactions"
-root_folder_id = "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
-spreadsheet_name = "Cashflow.xlsx"
+spreadsheet_id = "1OZ0cdEob37H8z0lGEI4gCet10ox5DgjO6u4wsQL29Ag"
 output_subdir = "cashflow"
 
 [[sources.cashflow.sheets]]

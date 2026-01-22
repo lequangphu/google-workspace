@@ -21,8 +21,8 @@ class TestIngestCLI:
 
     @staticmethod
     def run_ingest_with_args(args):
-        """Run ingest.py with specific arguments (using --validate-args)."""
-        cmd = [sys.executable, "-m", "src.modules.ingest"] + args + ["--validate-args"]
+        """Run ingest.py with specific arguments."""
+        cmd = [sys.executable, "-m", "src.modules.ingest"] + args
         result = subprocess.run(
             cmd,
             cwd=Path(__file__).parent.parent,
@@ -38,10 +38,8 @@ class TestIngestCLI:
         assert returncode == 0
         assert "--only" in stdout
         assert "--skip" in stdout
-        assert "--clear-cache" in stdout
-        assert "--test-mode" in stdout
-        assert "--cleanup" in stdout
-        assert "--validate-args" in stdout
+        assert "--year" in stdout
+        assert "--month" in stdout
 
     def test_help_lists_available_sources(self):
         """Help should list all available sources."""
@@ -58,13 +56,14 @@ class TestIngestCLI:
         assert returncode == 0
         assert "--only receivable,payable" in stdout
         assert "--skip import_export_receipts" in stdout
+        assert "--year 2024" in stdout
+        assert "--month 1" in stdout
 
     def test_only_single_source(self):
         """--only with single source should work."""
         returncode, stdout, stderr = self.run_ingest_with_args(["--only", "receivable"])
         assert returncode == 0
         assert "Ingesting only: receivable" in stdout
-        assert "Arguments validated successfully" in stdout
 
     def test_only_multiple_sources(self):
         """--only with comma-separated sources should parse correctly."""
@@ -73,7 +72,6 @@ class TestIngestCLI:
         )
         assert returncode == 0
         assert "Ingesting only: receivable, payable" in stdout
-        assert "Arguments validated successfully" in stdout
 
     def test_only_with_spaces(self):
         """--only should handle spaces after commas."""
@@ -82,7 +80,6 @@ class TestIngestCLI:
         )
         assert returncode == 0
         assert "Ingesting only: receivable, payable" in stdout
-        assert "Arguments validated successfully" in stdout
 
     def test_skip_single_source(self):
         """--skip with single source should exclude it."""
@@ -96,7 +93,6 @@ class TestIngestCLI:
             or ("Ingesting: receivable, payable, cashflow" in stdout)
             or ("Ingesting: payable, receivable, cashflow" in stdout)
         )
-        assert "Arguments validated successfully" in stdout
 
     def test_skip_multiple_sources(self):
         """--skip with multiple sources should exclude all."""
@@ -108,7 +104,6 @@ class TestIngestCLI:
         assert "Ingesting: receivable, cashflow" in stdout or (
             "Ingesting: cashflow, receivable" in stdout
         )
-        assert "Arguments validated successfully" in stdout
 
     def test_invalid_only_source_fails(self):
         """--only with invalid source should fail."""
@@ -133,44 +128,6 @@ class TestIngestCLI:
         )
         assert returncode == 1
         assert "Cannot use both --only and --skip simultaneously" in stdout
-
-    def test_clear_cache_flag(self):
-        """--clear-cache should be accepted (and executed before ingest)."""
-        returncode, stdout, stderr = self.run_ingest_with_args(["--clear-cache"])
-        # With validate-args, should show config without actual cache clearing
-        assert returncode == 0
-        assert "Clear cache: True" in stdout
-        assert "Arguments validated successfully" in stdout
-
-    def test_clear_cache_with_only(self):
-        """--clear-cache should work with --only."""
-        returncode, stdout, stderr = self.run_ingest_with_args(
-            ["--clear-cache", "--only", "receivable"]
-        )
-        assert returncode == 0
-        assert "Clear cache: True" in stdout
-        assert "Ingesting only: receivable" in stdout
-        assert "Arguments validated successfully" in stdout
-
-    def test_test_mode_flag(self):
-        """--test-mode flag should be accepted."""
-        returncode, stdout, stderr = self.run_ingest_with_args(
-            ["--only", "import_export_receipts", "--test-mode"]
-        )
-        assert returncode == 0
-        assert "Test mode: True" in stdout
-        assert "Ingesting only: import_export_receipts" in stdout
-        assert "Arguments validated successfully" in stdout
-
-    def test_cleanup_flag(self):
-        """--cleanup flag should be accepted."""
-        returncode, stdout, stderr = self.run_ingest_with_args(
-            ["--cleanup", "--only", "receivable"]
-        )
-        assert returncode == 0
-        assert "Cleanup: True" in stdout
-        assert "Ingesting only: receivable" in stdout
-        assert "Arguments validated successfully" in stdout
 
 
 class TestSourceFiltering:

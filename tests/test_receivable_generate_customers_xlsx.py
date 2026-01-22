@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from src.modules.receivable import generate_customers_xlsx as gc
+from src.utils.data_cleaning import clean_phone_number
 
 logger = logging.getLogger(__name__)
 
@@ -17,19 +18,19 @@ class TestCleanPhoneNumber:
     """Test individual phone number cleaning."""
 
     def test_clean_trailing_dot(self):
-        result = gc.clean_phone_number("0912345678.")
+        result = clean_phone_number("0912345678.")
         assert result == "0912345678"
 
     def test_clean_trailing_commas(self):
-        result = gc.clean_phone_number("0912345678,;;")
+        result = clean_phone_number("0912345678,;;")
         assert result == "0912345678"
 
     def test_clean_empty(self):
-        result = gc.clean_phone_number("")
+        result = clean_phone_number("")
         assert result == ""
 
     def test_clean_none(self):
-        result = gc.clean_phone_number(None)
+        result = clean_phone_number(None)
         assert result == ""
 
 

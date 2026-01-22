@@ -41,6 +41,7 @@ from src.utils.data_cleaning import (
     split_phone_numbers,
 )
 from src.utils.staging_cache import StagingCache
+from src.utils.xlsx_formatting import XLSXFormatter, format_value
 
 logger = logging.getLogger(__name__)
 
@@ -422,61 +423,18 @@ def map_to_kiotviet_template(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def write_xlsx(df: pd.DataFrame, output_path: Path) -> None:
-    """Write DataFrame to XLSX with formatting."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    """Write DataFrame to XLSX with formatting.
 
+    Delegates to XLSXFormatter.write_xlsx for standard formatting.
+    """
     template = CustomerTemplate()
-
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "Khách hàng"
-
-    for col_idx, col_spec in enumerate(template.COLUMNS, start=1):
-        cell = worksheet.cell(row=1, column=col_idx, value=col_spec.name)
-
-    for idx, row in df.iterrows():
-        for col_idx, col_spec in enumerate(template.COLUMNS, start=1):
-            value = row[col_spec.name]
-            if pd.isna(value):
-                value = ""
-            elif col_spec.data_type == "date":
-                if pd.notna(value) and isinstance(value, pd.Timestamp):
-                    value = value.to_pydatetime()
-                elif pd.notna(value) and not isinstance(value, str):
-                    value = str(value)
-            elif not isinstance(value, str):
-                value = str(value)
-            cell = worksheet.cell(row=idx + 2, column=col_idx, value=value)
-            if col_spec.data_type == "text":
-                cell.number_format = "@"
-
-    header_fill = PatternFill(
-        start_color="4472C4", end_color="4472C4", fill_type="solid"
+    XLSXFormatter.write_xlsx(
+        df=df,
+        output_path=output_path,
+        template=template,
+        sheet_name="Khách hàng",
+        column_width=20,
     )
-    header_font = Font(color="FFFFFF", bold=True)
-
-    for col_idx in range(1, len(template.COLUMNS) + 1):
-        cell = worksheet.cell(row=1, column=col_idx)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    for col_idx, col_spec in enumerate(template.COLUMNS, start=1):
-        letter = worksheet.cell(row=1, column=col_idx).column_letter
-        worksheet.column_dimensions[letter].width = 20
-
-        if col_spec.format_code and col_spec.data_type == "number":
-            for row in range(2, len(df) + 2):
-                cell = worksheet.cell(row=row, column=col_idx)
-                cell.number_format = col_spec.format_code
-                cell.alignment = Alignment(horizontal="right")
-        elif col_spec.format_code and col_spec.data_type == "date":
-            for row in range(2, len(df) + 2):
-                cell = worksheet.cell(row=row, column=col_idx)
-                cell.number_format = col_spec.format_code
-
-    workbook.save(output_path)
-    logger.info(f"Wrote XLSX: {output_path}")
 
 
 def format_value(value, data_type: str) -> any:
@@ -518,9 +476,6 @@ def format_value(value, data_type: str) -> any:
             except Exception:
                 pass
         return str(value) if value else ""
-
-    else:
-        return str(value)
 
 
 def upload_to_google_sheet(df: pd.DataFrame, sheets_service) -> bool:

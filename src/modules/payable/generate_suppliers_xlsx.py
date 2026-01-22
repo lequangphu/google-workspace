@@ -41,6 +41,7 @@ from src.utils.data_cleaning import (
     split_phone_numbers,
 )
 from src.utils.staging_cache import StagingCache
+from src.utils.xlsx_formatting import XLSXFormatter, format_value
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,15 @@ IMPORT_EXPORT_STAGING = DATA_STAGING_DIR / "import_export"
 DATA_EXPORT_DIR = Path.cwd() / "data" / "03-erp-export"
 PIPELINE_CONFIG = Path.cwd() / "pipeline.toml"
 
-PAYABLE_SPREADSHEET_ID = "1b4LWWyfddfiMZWnFreTyC-epo17IR4lcbUnPpLW8X00"
-EXPORT_SPREADSHEET_ID = "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k"
+_CONFIG = toml.load(PIPELINE_CONFIG) if PIPELINE_CONFIG.exists() else {}
+PAYABLE_SPREADSHEET_ID = (
+    _CONFIG.get("sources", {})
+    .get("payable", {})
+    .get("spreadsheet_id", "1b4LWWyfddfiMZWnFreTyC-epo17IR4lcbUnPpLW8X00")
+)
+EXPORT_SPREADSHEET_ID = _CONFIG.get("upload", {}).get(
+    "google_sheets_id_reports", "11vk-p0iL9JcNH180n4uV5VTuPnhJ97lBgsLEfCnWx_k"
+)
 EXPORT_SHEET_NAME = "suppliers_to_import"
 
 
@@ -413,51 +421,18 @@ def map_to_kiotviet_template(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def write_xlsx(df: pd.DataFrame, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    """Write DataFrame to XLSX with formatting.
 
+    Delegates to XLSXFormatter.write_xlsx for standard formatting.
+    """
     template = SupplierTemplate()
-
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "Nhà cung cấp"
-
-    for col_idx, col_spec in enumerate(template.COLUMNS, start=1):
-        cell = worksheet.cell(row=1, column=col_idx, value=col_spec.name)
-
-    for idx, row in df.iterrows():
-        for col_idx, col_spec in enumerate(template.COLUMNS, start=1):
-            value = row[col_spec.name]
-            if pd.isna(value):
-                value = ""
-            elif not isinstance(value, str):
-                value = str(value)
-            cell = worksheet.cell(row=idx + 2, column=col_idx, value=value)
-            if col_spec.data_type == "text":
-                cell.number_format = "@"
-
-    header_fill = PatternFill(
-        start_color="4472C4", end_color="4472C4", fill_type="solid"
+    XLSXFormatter.write_xlsx(
+        df=df,
+        output_path=output_path,
+        template=template,
+        sheet_name="Nhà cung cấp",
+        column_width=20,
     )
-    header_font = Font(color="FFFFFF", bold=True)
-
-    for col_idx in range(1, len(template.COLUMNS) + 1):
-        cell = worksheet.cell(row=1, column=col_idx)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    for col_idx, col_spec in enumerate(template.COLUMNS, start=1):
-        letter = worksheet.cell(row=1, column=col_idx).column_letter
-        worksheet.column_dimensions[letter].width = 20
-
-        if col_spec.format_code and col_spec.data_type == "number":
-            for row in range(2, len(df) + 2):
-                cell = worksheet.cell(row=row, column=col_idx)
-                cell.number_format = col_spec.format_code
-                cell.alignment = Alignment(horizontal="right")
-
-    workbook.save(output_path)
-    logger.info(f"Wrote XLSX: {output_path}")
 
 
 def validate_data(df: pd.DataFrame) -> tuple:
@@ -469,37 +444,6 @@ def validate_data(df: pd.DataFrame) -> tuple:
             logger.error(f"Validation error: {error}")
 
     return is_valid, errors
-
-
-def format_value(value, data_type: str) -> any:
-    if value is None or value == "" or (isinstance(value, float) and pd.isna(value)):
-        return ""
-
-    if data_type == "number":
-        if isinstance(value, (int, float)):
-            return value
-        try:
-            cleaned = str(value).replace(",", "").replace(".", "").replace(" ", "")
-            if cleaned.startswith("(") and cleaned.endswith(")"):
-                cleaned = "-" + cleaned[1:-1]
-            return float(cleaned)
-        except (ValueError, TypeError):
-            return str(value)
-
-    elif data_type == "date":
-        if isinstance(value, str):
-            if "-" in value and len(value) >= 10:
-                return value[:10]
-            try:
-                parsed = pd.to_datetime(value, errors="coerce")
-                if pd.notna(parsed):
-                    return parsed.strftime("%Y-%m-%d")
-            except Exception:
-                pass
-        return str(value)
-
-    else:
-        return str(value)
 
 
 def upload_to_google_sheet(df: pd.DataFrame, sheets_service) -> bool:

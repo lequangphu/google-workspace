@@ -1,16 +1,26 @@
 """Tests for src/modules/ingest.py and google_api.py."""
 
+import pytest
+import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.modules.ingest import RAW_SOURCES
 from src.modules.google_api import (
     parse_file_metadata,
-    should_ingest_file,
     find_year_folders,
     find_sheets_in_folder,
     get_sheet_tabs,
 )
+
+
+@pytest.fixture(autouse=True)
+def mock_google_drive_connection():
+    """Mock Google Drive connection to prevent actual API calls during tests."""
+    with patch("src.modules.ingest.connect_to_drive") as mock_connect:
+        mock_connect.return_value = (MagicMock(), MagicMock())
+        yield
 
 
 class TestParseFileMetadata:
@@ -39,41 +49,6 @@ class TestParseFileMetadata:
         year, month = parse_file_metadata("")
         assert year is None
         assert month is None
-
-
-class TestShouldIngestFile:
-    """Test should_ingest_file function."""
-
-    def test_file_does_not_exist(self):
-        """Should ingest if file doesn't exist."""
-        csv_path = Path("/tmp/nonexistent_file.csv")
-        remote_time = "2025-01-01T10:00:00.000Z"
-        assert should_ingest_file(csv_path, remote_time) is True
-
-    def test_remote_newer_than_local(self, tmp_path):
-        """Should ingest if remote is newer."""
-        csv_path = tmp_path / "test.csv"
-        csv_path.write_text("old data")
-
-        # Set local file to 1 hour ago
-        import time
-        import os
-
-        one_hour_ago = time.time() - 3600
-        os.utime(csv_path, (one_hour_ago, one_hour_ago))
-
-        # Remote time in the future
-        remote_time = "2099-01-01T10:00:00.000Z"
-        assert should_ingest_file(csv_path, remote_time) is True
-
-    def test_local_newer_than_remote(self, tmp_path):
-        """Should not ingest if local is newer."""
-        csv_path = tmp_path / "test.csv"
-        csv_path.write_text("new data")
-
-        # Remote time in past
-        remote_time = "2020-01-01T10:00:00.000Z"
-        assert should_ingest_file(csv_path, remote_time) is False
 
 
 class TestFindYearFolders:
@@ -155,7 +130,7 @@ class TestGetSheetTabs:
         assert result == ["CT.NHAP", "CT.XUAT", "XNT"]
 
     def test_get_tabs_error(self):
-        """Handle HTTP error gracefully."""
+        """Handle HTTP error gracefully - should raise HttpError on 404."""
         from googleapiclient.errors import HttpError
 
         mock_service = MagicMock()
@@ -163,8 +138,9 @@ class TestGetSheetTabs:
             MagicMock(status=404), b"Not Found"
         )
 
-        result = get_sheet_tabs(mock_service, "spreadsheet_id")
-        assert result == []
+        # 404 is a permanent error, no retry, should raise immediately
+        with pytest.raises(HttpError):
+            result = get_sheet_tabs(mock_service, "spreadsheet_id")
 
 
 class TestRawSourcesConfiguration:
@@ -181,9 +157,8 @@ class TestRawSourcesConfiguration:
         """Verify import_export_receipts configuration."""
         config = RAW_SOURCES["import_export_receipts"]
         assert config["type"] == "folder"
-        assert isinstance(config["folder_ids"], list)
-        assert len(config["folder_ids"]) == 3
-        assert "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj" in config["folder_ids"]
+        assert config["root_folder_id"] == "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
+        assert config["receipts_subfolder_name"] == "Import Export Receipts"
         assert config["tabs"] == ["CT.NHAP", "CT.XUAT", "XNT"]
         assert config["output_subdir"] == "import_export"
 
@@ -191,9 +166,8 @@ class TestRawSourcesConfiguration:
         """Verify receivable configuration."""
         config = RAW_SOURCES["receivable"]
         assert config["type"] == "spreadsheet"
-        assert (
-            config["spreadsheet_id"] == "1kouZwJy8P_zZhjjn49Lfbp3KN81mhHADV7VKDhv5xkM"
-        )
+        assert config["root_folder_id"] == "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
+        assert config["spreadsheet_name"] == "Receivable.xlsx"
         assert "sheets" in config
         assert isinstance(config["sheets"], list)
         assert len(config["sheets"]) == 2
@@ -205,9 +179,8 @@ class TestRawSourcesConfiguration:
         """Verify payable configuration."""
         config = RAW_SOURCES["payable"]
         assert config["type"] == "spreadsheet"
-        assert (
-            config["spreadsheet_id"] == "1b4LWWyfddfiMZWnFreTyC-epo17IR4lcbUnPpLW8X00"
-        )
+        assert config["root_folder_id"] == "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
+        assert config["spreadsheet_name"] == "Payable.xlsx"
         assert "sheets" in config
         assert isinstance(config["sheets"], list)
         assert len(config["sheets"]) == 2
@@ -219,12 +192,52 @@ class TestRawSourcesConfiguration:
         """Verify cashflow configuration."""
         config = RAW_SOURCES["cashflow"]
         assert config["type"] == "spreadsheet"
-        assert (
-            config["spreadsheet_id"] == "1OZ0cdEob37H8z0lGEI4gCet10ox5DgjO6u4wsQL29Ag"
-        )
+        assert config["root_folder_id"] == "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
+        assert config["spreadsheet_name"] == "Cashflow.xlsx"
         assert "sheets" in config
         assert isinstance(config["sheets"], list)
         assert len(config["sheets"]) == 2
         sheet_names = [s["name"] for s in config["sheets"]]
         assert "Tiền gửi" in sheet_names
         assert "Tien mat" in sheet_names
+
+
+class TestIngestErrorHandling:
+    """Test error handling in ingest_from_drive."""
+
+    @staticmethod
+    def run_ingest_with_args(args):
+        """Run ingest.py with specific arguments."""
+        cmd = [sys.executable, "-m", "src.modules.ingest"] + args
+        result = subprocess.run(
+            cmd,
+            cwd=Path(__file__).parent.parent,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    def test_invalid_source_error(self):
+        """Invalid source should exit with code 1."""
+        returncode, stdout, stderr = self.run_ingest_with_args(
+            ["--only", "invalid_source"]
+        )
+        assert returncode == 1
+        assert "Invalid sources: ['invalid_source']" in stdout
+
+    def test_invalid_skip_source_error(self):
+        """Invalid source to skip should exit with code 1."""
+        returncode, stdout, stderr = self.run_ingest_with_args(
+            ["--skip", "invalid_source"]
+        )
+        assert returncode == 1
+        assert "Invalid sources to skip: ['invalid_source']" in stdout
+
+    def test_only_and_skip_conflict_error(self):
+        """Using both --only and --skip should exit with code 1."""
+        returncode, stdout, stderr = self.run_ingest_with_args(
+            ["--only", "receivable", "--skip", "payable"]
+        )
+        assert returncode == 1
+        assert "Cannot use both --only and --skip simultaneously" in stdout

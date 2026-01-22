@@ -7,5 +7,5 @@ Processes:
 - CT.NHAP (purchase receipts) → clean_receipts_purchase.py
 - CT.XUAT (sales receipts) → clean_receipts_sale.py
 - XNT (inventory) → clean_inventory.py
-- Extract products → extract_products.py
+- Products XLSX → generate_products_xlsx.py (consolidates extract_products.py logic)
 """
