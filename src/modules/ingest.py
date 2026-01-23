@@ -1,10 +1,12 @@
-"""Ingest Google Sheets data to raw CSV files in data/00-raw/.
+"""Ingest Google Sheets data to raw CSV files in data/00-raw/ and staging in data/01-staging/.
 
 Handles 4 raw sources from project_description.md:
-1. Import/Export Receipts: Year/month files with CT.NHAP, CT.XUAT, XNT tabs
-2. Receivable: Direct spreadsheet CONG NO HANG NGAY - MỚI
-3. Payable: Direct spreadsheet BC CÔNG NỢ NCC
-4. CashFlow: Direct spreadsheet SỔ QUỸ TIỀN MẶT + NGÂN HÀNG - 2025
+1. Import/Export Receipts: Year/month files with cleaned tabs (Chi tiết nhập, Chi tiết xuất, Xuất nhập tồn, Chi tiết chi phí) → data/01-staging/import_export/
+2. Receivable: Direct spreadsheet CONG NO HANG NGAY - MỚI → data/00-raw/receivable/
+3. Payable: Direct spreadsheet BC CÔNG NỢ NCC → data/00-raw/payable/
+4. CashFlow: Direct spreadsheet SỔ QUỸ TIỀN MẶT + NGÂN HÀNG - 2025 → data/00-raw/cashflow/
+
+Note: Import/Export Receipts writes to staging because cleaned tabs are pre-processed data.
 """
 
 import logging
@@ -46,6 +48,7 @@ def load_pipeline_config() -> Dict[str, Any]:
 # Load config once at module import (ADR-1: Config-driven, not hardcoded)
 _CONFIG = load_pipeline_config()
 RAW_DATA_DIR = Path(_CONFIG["dirs"]["raw_data"])
+STAGING_DATA_DIR = Path(_CONFIG["dirs"]["staging"])
 
 RAW_SOURCES = {
     source_key: {
@@ -147,7 +150,11 @@ def _process_import_export_receipts(
     year_list: Optional[List[int]],
     month_list: Optional[List[int]],
 ) -> tuple[int, int]:
-    """Handle folder-based import_export_receipts source."""
+    """Handle folder-based import_export_receipts source.
+
+    Writes cleaned tabs directly to staging (data/01-staging/import_export/)
+    because they are pre-processed data from Google Sheets.
+    """
     files_ingested = 0
     error_count = 0
 
@@ -206,7 +213,9 @@ def _process_import_export_receipts(
         tabs_to_process = set(tabs) & set(desired_tabs)
 
         for tab in tabs_to_process:
-            csv_path = RAW_DATA_DIR / "import_export" / f"{year_num}_{month}_{tab}.csv"
+            csv_path = (
+                STAGING_DATA_DIR / "import_export" / f"{year_num}_{month}_{tab}.csv"
+            )
 
             try:
                 if export_tab_to_csv(sheets_service, file_id, tab, csv_path):
@@ -300,6 +309,7 @@ def ingest_from_drive(
     _validate_year_month_filters(year_list, month_list)
 
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    STAGING_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     files_ingested = 0
     error_count = 0

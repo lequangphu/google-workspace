@@ -19,11 +19,11 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Font, PatternFill
 
 from src.erp.templates import ProductTemplate
-from src.utils.product_attributes import extract_attributes
+from src.modules.import_export_receipts.product_cleaning import (
+    extract_attributes,
+)
 from src.utils.staging_cache import StagingCache
 from src.utils.xlsx_formatting import XLSXFormatter
 

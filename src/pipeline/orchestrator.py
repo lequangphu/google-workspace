@@ -82,13 +82,15 @@ MODULE_INGEST = WORKSPACE_ROOT / "src" / "modules" / "ingest.py"
 
 # Transform module registry: maps source to transformation scripts
 # NOTE: Module registry loaded from pipeline.toml in execute_pipeline()
-# Legacy hardcoded reference kept for backward compat during migration
+# 2026-01-23: Clean scripts deprecated - data ingested from cleaned Google Sheets tabs
+#         Chi tiết nhập, Chi tiết xuất, Xuất nhập tồn, Chi tiết chi phí
 TRANSFORM_MODULES_LEGACY = {
     "import_export_receipts": [
-        "clean_inventory.py",
-        "clean_receipts_purchase.py",
-        "clean_receipts_sale.py",
-        "refine_product_master.py",
+        # clean_inventory.py - DEPRECATED
+        # clean_receipts_purchase.py - DEPRECATED
+        # clean_receipts_sale.py - DEPRECATED
+        "refine_product_master.py",  # Keep if needed for product unification
+        "generate_product_master.py",  # Keep for historical reference
     ],
     "receivable": [
         "generate_customers_xlsx.py",

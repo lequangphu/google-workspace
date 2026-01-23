@@ -662,5 +662,15 @@ def transform_purchase_receipts(
     return output_filepath
 
 
+# DEPRECATED: This script is no longer needed.
+
+# Data is now ingested directly from cleaned Google Sheets tabs:
+# - "Chi tiết nhập" (instead of CT.NHAP)
+# - "Chi tiết xuất" (instead of CT.XUAT)
+# - "Xuất nhập tồn" (instead of XNT)
+
+# This file is kept for historical reference only.
+# Last used: 2026-01-23
+
 if __name__ == "__main__":
     transform_purchase_receipts()

@@ -4,6 +4,11 @@
 This module provides a unified DataLoader class that uses StagingCache
 to load all staging data with automatic invalidation.
 
+Staging Data Flow:
+- Import/Export Receipts: Cleaned tabs written directly to staging by ingest.py
+  (data/01-staging/import_export/) because they are pre-processed in Google Sheets
+- Other sources: Still ingested to raw (data/00-raw/) and processed to staging
+
 Replaces scattered pd.read_csv() calls in:
 - generate_products_xlsx.py
 - generate_customers_xlsx.py
@@ -29,6 +34,10 @@ class DataLoader:
 
     Provides single entry point for all staging data reads with automatic
     cache invalidation via StagingCache.
+
+    Note: Import/Export Receipts (cleaned tabs) are now written directly
+    to staging by ingest.py, bypassing the raw-to-staging transformation
+    that was previously handled by clean scripts.
 
     Usage:
         loader = DataLoader()
@@ -140,7 +149,7 @@ class DataLoader:
 
         df = self.cache.get_dataframe(latest_file)
 
-        result = df[["Mã hàng", "Số lượng cuối kỳ", "Đơn giá cuối kỳ"]].copy()
+        result = df[["Mã hàng", "Tồn cuối kỳ", "Giá trị cuối kỳ"]].copy()
         return result
 
     def load_customers(
