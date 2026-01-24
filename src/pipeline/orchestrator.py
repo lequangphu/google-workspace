@@ -3,6 +3,10 @@
 """
 Data Pipeline Orchestrator
 
+Source Type Configuration (ADR-005):
+- "preprocessed": Data already clean, skip transform (e.g., import_export_receipts)
+- "raw": Data needs transformation to staging (e.g., receivable, payable, cashflow)
+
 CLI Quick Reference:
     uv run src/pipeline/orchestrator.py                    # Full pipeline, all modules
     uv run src/pipeline/orchestrator.py -m ier             # Full pipeline, import_export_receipts only
@@ -82,13 +86,15 @@ MODULE_INGEST = WORKSPACE_ROOT / "src" / "modules" / "ingest.py"
 
 # Transform module registry: maps source to transformation scripts
 # NOTE: Module registry loaded from pipeline.toml in execute_pipeline()
-# Legacy hardcoded reference kept for backward compat during migration
+# 2026-01-23: Clean scripts deprecated - data ingested from cleaned Google Sheets tabs
+#         Chi tiết nhập, Chi tiết xuất, Xuất nhập tồn, Chi tiết chi phí
 TRANSFORM_MODULES_LEGACY = {
     "import_export_receipts": [
-        "clean_inventory.py",
-        "clean_receipts_purchase.py",
-        "clean_receipts_sale.py",
-        "refine_product_master.py",
+        # clean_inventory.py - DEPRECATED
+        # clean_receipts_purchase.py - DEPRECATED
+        # clean_receipts_sale.py - DEPRECATED
+        "refine_product_master.py",  # Keep if needed for product unification
+        "generate_product_master.py",  # Keep for historical reference
     ],
     "receivable": [
         "generate_customers_xlsx.py",
@@ -155,6 +161,27 @@ def payable_transform() -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _get_source_type(source_key: str) -> str:
+    """Get source_type from pipeline.toml configuration.
+
+    Args:
+        source_key: Source key from pipeline.toml (e.g., "import_export_receipts").
+
+    Returns:
+        Source type string ("preprocessed" or "raw"). Defaults to "raw" if not specified.
+    """
+    import tomllib
+    from pathlib import Path
+
+    config_path = WORKSPACE_ROOT / "pipeline.toml"
+    with open(config_path, "rb") as f:
+        config = tomllib.load(f)
+
+    sources = config.get("sources", {})
+    source_config = sources.get(source_key, {})
+    return source_config.get("source_type", "raw")
 
 
 # === HELPER FUNCTIONS ===
@@ -360,12 +387,20 @@ def step_transform(
     logger.info("=" * 70)
 
     # Build list of (module, script) tuples from registry
-    # TODO: Load from pipeline.toml in Phase 1
+    # Filter out "preprocessed" sources (skip transform)
     transform_modules = []
     for module, scripts in TRANSFORM_MODULES_LEGACY.items():
         if modules_filter and module not in modules_filter:
             logger.debug(f"Skipping module: {module}")
             continue
+
+        source_type = _get_source_type(module)
+        if source_type == "preprocessed":
+            logger.info(
+                f"Skipping transform for {module} (preprocessed source, data already in staging)"
+            )
+            continue
+
         for script in scripts:
             transform_modules.append((module, script))
 

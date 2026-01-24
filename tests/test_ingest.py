@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.modules.ingest import RAW_SOURCES
+from src.modules.ingest import RAW_SOURCES, _validate_year_month
 from src.modules.google_api import (
     parse_file_metadata,
     find_year_folders,
@@ -21,6 +21,57 @@ def mock_google_drive_connection():
     with patch("src.modules.ingest.connect_to_drive") as mock_connect:
         mock_connect.return_value = (MagicMock(), MagicMock())
         yield
+
+
+class TestValidateYearMonth:
+    """Test _validate_year_month function for path traversal protection."""
+
+    def test_valid_year_month(self):
+        """Valid year and month pass validation."""
+        _validate_year_month(2025, 1)
+        _validate_year_month(2020, 12)
+        _validate_year_month(2030, 6)
+
+    def test_invalid_year_too_low(self):
+        """Year below 2020 raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            _validate_year_month(2019, 1)
+        assert "Invalid year: 2019 (must be 2020-2030)" in str(exc_info.value)
+
+    def test_invalid_year_too_high(self):
+        """Year above 2030 raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            _validate_year_month(2031, 1)
+        assert "Invalid year: 2031 (must be 2020-2030)" in str(exc_info.value)
+
+    def test_invalid_month_too_low(self):
+        """Month below 1 raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            _validate_year_month(2025, 0)
+        assert "Invalid month: 0 (must be 1-12)" in str(exc_info.value)
+
+    def test_invalid_month_too_high(self):
+        """Month above 12 raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            _validate_year_month(2025, 13)
+        assert "Invalid month: 13 (must be 1-12)" in str(exc_info.value)
+
+    def test_edge_cases(self):
+        """Test boundary values."""
+        _validate_year_month(2020, 1)  # Lower boundary
+        _validate_year_month(2030, 12)  # Upper boundary
+
+    def test_negative_values(self):
+        """Negative year and month raise ValueError."""
+        with pytest.raises(ValueError):
+            _validate_year_month(-1, 1)
+        with pytest.raises(ValueError):
+            _validate_year_month(2025, -1)
+
+    def test_extreme_values(self):
+        """Extremely large year raises ValueError."""
+        with pytest.raises(ValueError):
+            _validate_year_month(9999, 1)
 
 
 class TestParseFileMetadata:

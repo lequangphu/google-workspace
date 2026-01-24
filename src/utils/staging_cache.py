@@ -1,50 +1,75 @@
 # -*- coding: utf-8 -*-
-"""Staging data cache with automatic invalidation.
+"""Staging data cache with LRU eviction.
 
 This module provides a caching layer for reading staging data files,
 reducing redundant I/O operations across multiple pipeline stages.
 
 Features:
-- File-based caching with modification time tracking
-- Automatic cache invalidation when files change
-- Thread-safe singleton pattern
+- LRU cache with configurable size limit (prevents unbounded memory growth)
+- Automatic eviction of least recently used files
+- Returns reference to cached DataFrame (caller must copy if modifying)
 - Manual cache clearing support
+- Cache hit/miss metrics
+
+Configuration:
+- CACHE_MAXSIZE: Maximum number of files to cache (default: 50)
 """
 
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
+
+from functools import lru_cache
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+CACHE_MAXSIZE = 50
+
 
 class StagingCache:
-    """Cache for staging data reads with invalidation.
+    """Cache for staging data reads with LRU eviction.
 
-    Caches DataFrames read from staging CSV files and invalidates
-    them when the underlying files are modified (detected via mtime).
+    Caches DataFrames read from staging CSV files using LRU policy.
+    Automatically evicts least recently used files when cache size limit reached.
 
     Usage:
-        cache = StagingCache()
-        df = cache.get_dataframe("/path/to/staging/data.csv")
-        cache.invalidate()  # Clear all cached data
-        cache.invalidate("/path/to/specific/file.csv")  # Clear one file
+        df = StagingCache.get_dataframe("/path/to/staging/data.csv")
+        StagingCache.invalidate()  # Clear all cached data
+
+    Note: Returns reference to cached DataFrame. If you need to modify the data,
+    call df.copy() after retrieving.
     """
 
-    _cache: Dict[Path, pd.DataFrame] = {}
-    _modification_times: Dict[Path, float] = {}
+    @staticmethod
+    @lru_cache(maxsize=CACHE_MAXSIZE)
+    def _read_csv(filepath: str) -> pd.DataFrame:
+        """Read CSV file - cached by LRU decorator.
+
+        Args:
+            filepath: String path to CSV file
+
+        Returns:
+            DataFrame loaded from file
+
+        Raises:
+            FileNotFoundError: If filepath does not exist
+            pd.errors.EmptyDataError: If file is empty
+        """
+        path = Path(filepath)
+        logger.debug(f"Cache miss: {path.name} - reading from file")
+        return pd.read_csv(path, encoding="utf-8")
 
     @classmethod
     def get_dataframe(cls, filepath: Path) -> pd.DataFrame:
-        """Get DataFrame from cache or read from file with invalidation.
+        """Get DataFrame from LRU cache or read from file.
 
         Args:
             filepath: Path to staging CSV file
 
         Returns:
-            Cached or newly loaded DataFrame
+            Cached or newly loaded DataFrame (reference to cached data)
 
         Raises:
             FileNotFoundError: If filepath does not exist
@@ -56,41 +81,18 @@ class StagingCache:
         if not filepath.exists():
             raise FileNotFoundError(f"Staging file not found: {filepath}")
 
-        current_mtime = filepath.stat().st_mtime
-        cached_mtime = cls._modification_times.get(filepath)
-
-        if filepath in cls._cache and cached_mtime == current_mtime:
-            logger.debug(f"Cache hit: {filepath.name}")
-            return cls._cache[filepath].copy()
-
-        logger.debug(f"Cache miss: {filepath.name} - reading from file")
-        df = pd.read_csv(filepath, encoding="utf-8")
-
-        cls._cache[filepath] = df
-        cls._modification_times[filepath] = current_mtime
-
-        return df.copy()
+        df = cls._read_csv(str(filepath))
+        logger.debug(f"Cache hit: {filepath.name}")
+        return df
 
     @classmethod
-    def invalidate(cls, filepath: Optional[Path] = None):
-        """Invalidate cache for specific file or all files.
+    def invalidate(cls) -> None:
+        """Clear all cached data.
 
-        Args:
-            filepath: Specific file to invalidate, or None to clear all cache
+        Invalidates entire LRU cache, forcing reload on next access.
         """
-        if filepath:
-            if isinstance(filepath, str):
-                filepath = Path(filepath)
-
-            if filepath in cls._cache:
-                del cls._cache[filepath]
-            if filepath in cls._modification_times:
-                del cls._modification_times[filepath]
-            logger.debug(f"Invalidated cache for: {filepath.name}")
-        else:
-            cls._cache.clear()
-            cls._modification_times.clear()
-            logger.debug("Invalidated all cache entries")
+        cls._read_csv.cache_clear()
+        logger.debug("Invalidated all cache entries")
 
     @classmethod
     def get_cache_info(cls) -> Dict[str, int]:
@@ -99,19 +101,23 @@ class StagingCache:
         Returns:
             Dict with keys:
                 - cached_files: Number of files currently cached
-                - total_size_mb: Approximate memory usage in MB
+                - maxsize: Maximum cache size
+                - hits: Number of cache hits
+                - misses: Number of cache misses
         """
-        total_memory_mb = sum(
-            df.memory_usage(deep=True).sum() for df in cls._cache.values()
-        ) / (1024 * 1024)
-
+        info = cls._read_csv.cache_info()
         return {
-            "cached_files": len(cls._cache),
-            "total_memory_mb": round(total_memory_mb, 2),
+            "cached_files": info.currsize,
+            "maxsize": info.maxsize,
+            "hits": info.hits,
+            "misses": info.misses,
+            "hit_rate": round(info.hits / max(info.hits + info.misses, 1), 2)
+            if info.hits + info.misses > 0
+            else 0.0,
         }
 
     @classmethod
-    def preload(cls, filepaths: list[Path]):
+    def preload(cls, filepaths: list[Path]) -> None:
         """Preload multiple files into cache.
 
         Useful for batch operations where multiple files will be read.

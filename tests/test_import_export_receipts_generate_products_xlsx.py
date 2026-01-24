@@ -125,12 +125,12 @@ class TestGetLatestInventory:
 
     def test_get_latest_inventory(self, tmp_path):
         """Test extracting latest month inventory per product."""
-        xnt_file = tmp_path / "xuat_nhap_ton_2025_01_12.csv"
-        xnt_file.write_text("""Mã hàng,Ngày,Số lượng cuối kỳ,Đơn giá cuối kỳ
-A,2025-01-01,100,10.0
-A,2025-02-01,80,11.0
-B,2025-01-01,50,20.0
-B,2025-02-01,45,21.0
+        xnt_file = tmp_path / "Xuất nhập tồn 2025_01_12.csv"
+        xnt_file.write_text("""Mã hàng,Ngày,Tồn cuối kỳ,Giá trị cuối kỳ
+A,2025-01-01,100,1000.0
+A,2025-02-01,80,880.0
+B,2025-01-01,50,1000.0
+B,2025-02-01,45,945.0
 """)
 
         result = get_latest_inventory(tmp_path)
@@ -139,10 +139,10 @@ B,2025-02-01,45,21.0
         product_a = result[result["Mã hàng"] == "A"]
         product_b = result[result["Mã hàng"] == "B"]
 
-        assert product_a["Số lượng cuối kỳ"].iloc[0] == 80
-        assert product_a["Đơn giá cuối kỳ"].iloc[0] == 11.0
-        assert product_b["Số lượng cuối kỳ"].iloc[0] == 45
-        assert product_b["Đơn giá cuối kỳ"].iloc[0] == 21.0
+        assert product_a["Tồn cuối kỳ"].iloc[0] == 80
+        assert product_a["Đơn giá"].iloc[0] == 11.0
+        assert product_b["Tồn cuối kỳ"].iloc[0] == 45
+        assert product_b["Đơn giá"].iloc[0] == 21.0
 
     def test_get_latest_inventory_no_files(self, tmp_path):
         """Test when no XNT files exist."""
@@ -151,10 +151,10 @@ B,2025-02-01,45,21.0
 
     def test_get_latest_inventory_no_date_column(self, tmp_path):
         """Test when XNT file has no Ngày column."""
-        xnt_file = tmp_path / "xuat_nhap_ton_2025_01_12.csv"
-        xnt_file.write_text("""Mã hàng,Số lượng cuối kỳ,Đơn giá cuối kỳ
-A,100,10.0
-B,50,20.0
+        xnt_file = tmp_path / "Xuất nhập tồn 2025_01_12.csv"
+        xnt_file.write_text("""Mã hàng,Tồn cuối kỳ,Giá trị cuối kỳ
+A,100,1000.0
+B,50,1000.0
 """)
 
         with pytest.raises(ValueError):
@@ -166,28 +166,28 @@ class TestProcessIntegration:
 
     def test_process_creates_output_file(self, tmp_path):
         """Test that process() creates Products.xlsx."""
-        staging_dir = tmp_path / "import_export"
-        staging_dir.mkdir()
+        raw_dir = tmp_path / "import_export"
+        raw_dir.mkdir()
 
         export_dir = tmp_path / "export"
         export_dir.mkdir()
 
-        nhap_file = staging_dir / "Chi tiết nhập_2025_01.csv"
+        nhap_file = raw_dir / "Chi tiết nhập_2025_01.csv"
         nhap_file.write_text("""Mã chứng từ,Ngày,Mã hàng,Tên hàng,Số lượng,Thành tiền
 CT001,2025-01-15,A,Product A,100,10000
 CT002,2025-01-16,B,Product B,50,5000
 """)
 
-        xuat_file = staging_dir / "Chi tiết xuất_2025_01.csv"
+        xuat_file = raw_dir / "Chi tiết xuất_2025_01.csv"
         xuat_file.write_text("""Mã chứng từ,Ngày,Tên khách hàng,Mã hàng,Tên hàng,Số lượng,Thành tiền
 CT003,2025-01-17,Khách A,A,Product A,20,2500
 CT004,2025-01-18,Khách B,B,Product B,10,1200
 """)
 
-        xnt_file = staging_dir / "xuat_nhap_ton_2025_01_12.csv"
-        xnt_file.write_text("""Mã hàng,Ngày,Số lượng cuối kỳ,Đơn giá cuối kỳ
-A,2025-01-31,80,100.0
-B,2025-01-31,40,120.0
+        xnt_file = raw_dir / "Xuất nhập tồn 2025_01_12.csv"
+        xnt_file.write_text("""Mã hàng,Ngày,Tồn cuối kỳ,Giá trị cuối kỳ
+A,2025-01-31,80,8000.0
+B,2025-01-31,40,4800.0
 """)
 
         from src.modules.import_export_receipts.generate_products_xlsx import (
@@ -210,20 +210,20 @@ B,2025-01-31,40,120.0
                 }
             )
 
-            result = generate_products(staging_dir=staging_dir)
+            result = generate_products(raw_dir=raw_dir)
 
             assert result is not None
             assert result.exists()
             assert result.name == "Products.xlsx"
             assert result.parent == export_dir
 
-    def test_process_missing_staging_dir(self):
-        """Test that process() returns None when staging dir missing."""
+    def test_process_missing_raw_dir(self):
+        """Test that process() returns None when raw dir missing."""
         from src.modules.import_export_receipts.generate_products_xlsx import (
             process as generate_products,
         )
 
-        result = generate_products(staging_dir=Path("/nonexistent"))
+        result = generate_products(raw_dir=Path("/nonexistent"))
         assert result is None
 
 
@@ -300,8 +300,8 @@ class TestBuildTemplateDataframeWithFallback:
         inventory = pd.DataFrame(
             {
                 "Mã hàng": ["A", "B", "C"],
-                "Số lượng cuối kỳ": [100, 50, 75],
-                "Đơn giá cuối kỳ": [10.0, 20.0, 15.0],
+                "Tồn cuối kỳ": [100, 50, 75],
+                "Đơn giá": [10.0, 20.0, 15.0],
             }
         )
 
@@ -341,8 +341,8 @@ class TestBuildTemplateDataframeWithFallback:
         inventory = pd.DataFrame(
             {
                 "Mã hàng": ["A"],
-                "Số lượng cuối kỳ": [100],
-                "Đơn giá cuối kỳ": [10.0],
+                "Tồn cuối kỳ": [100],
+                "Đơn giá": [10.0],
             }
         )
 
@@ -373,8 +373,8 @@ class TestBuildTemplateDataframeWithFallback:
         inventory = pd.DataFrame(
             {
                 "Mã hàng": ["A"],
-                "Số lượng cuối kỳ": [100],
-                "Đơn giá cuối kỳ": [10.0],
+                "Tồn cuối kỳ": [100],
+                "Đơn giá": [10.0],
             }
         )
 
