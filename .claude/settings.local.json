@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git show 5f54446 --stat --format=\"%H%n%an%n%ad%n%s\")"
+    ]
+  }
+}
