@@ -14,6 +14,7 @@ steps = ["ingest", "transform", "validate", "export"]
 # Raw Sources Configuration (maps to ingest.py RAW_SOURCES)
 [sources.import_export_receipts]
 type = "folder"
+source_type = "preprocessed"
 description = "Import/Export Receipts: Year/month files with Chi tiết nhập, Chi tiết xuất, Xuất nhập tồn tabs (reconciled/cleaned)"
 root_folder_id = "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
 receipts_subfolder_name = "Xuất Nhập Tồn 2020-2025"
@@ -22,6 +23,7 @@ output_subdir = "import_export"
 
 [sources.receivable]
 type = "spreadsheet"
+source_type = "raw"
 description = "Receivable: customer debt ledger + customer info"
 root_folder_id = "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
 spreadsheet_name = "Receivable.xlsx"
@@ -38,6 +40,7 @@ output_file = "receivable_customers"
 
 [sources.payable]
 type = "spreadsheet"
+source_type = "raw"
 description = "Payable: supplier master + debt ledger"
 root_folder_id = "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
 spreadsheet_name = "Payable.xlsx"
@@ -54,6 +57,7 @@ output_file = "payable_summary"
 
 [sources.cashflow]
 type = "spreadsheet"
+source_type = "raw"
 description = "CashFlow: deposits and cash transactions"
 root_folder_id = "16CXAGzxxoBU8Ui1lXPxZoLVbDdsgwToj"
 spreadsheet_name = "Cashflow.xlsx"

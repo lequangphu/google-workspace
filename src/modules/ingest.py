@@ -1,12 +1,14 @@
-"""Ingest Google Sheets data to raw CSV files in data/00-raw/ and staging in data/01-staging/.
+"""Ingest Google Sheets data to raw CSV files in data/00-raw/.
 
 Handles 4 raw sources from project_description.md:
-1. Import/Export Receipts: Year/month files with cleaned tabs (Chi tiết nhập, Chi tiết xuất, Xuất nhập tồn, Chi tiết chi phí) → data/01-staging/import_export/
+1. Import/Export Receipts: Year/month files with cleaned tabs (Chi tiết nhập, Chi tiết xuất, Xuất nhập tồn, Chi tiết chi phí) → data/00-raw/import_export/
 2. Receivable: Direct spreadsheet CONG NO HANG NGAY - MỚI → data/00-raw/receivable/
 3. Payable: Direct spreadsheet BC CÔNG NỢ NCC → data/00-raw/payable/
 4. CashFlow: Direct spreadsheet SỔ QUỸ TIỀN MẶT + NGÂN HÀNG - 2025 → data/00-raw/cashflow/
 
-Note: Import/Export Receipts writes to staging because cleaned tabs are pre-processed data.
+Note: All sources write to raw directory. Source type configuration in pipeline.toml
+determines whether transform step is needed (raw vs preprocessed).
+See ADR-005 for source_type configuration details.
 """
 
 import logging
@@ -22,8 +24,12 @@ from src.modules.google_api import (
     find_spreadsheet_in_folder,
     get_sheet_tabs,
 )
+from src.pipeline.validation import validate_schema
+from src.utils.path_config import PathConfig
 
 logger = logging.getLogger(__name__)
+
+path_config = PathConfig()
 
 
 def load_pipeline_config() -> Dict[str, Any]:
@@ -82,6 +88,22 @@ def _validate_year_month_filters(
                 sys.exit(1)
 
 
+def _validate_year_month(year_num: int, month: int) -> None:
+    """Validate year and month ranges for path construction.
+
+    Args:
+        year_num: Year from filename (must be 2020-2030).
+        month: Month from filename (must be 1-12).
+
+    Raises:
+        ValueError: If year or month is outside valid range.
+    """
+    if not (2020 <= year_num <= 2030):
+        raise ValueError(f"Invalid year: {year_num} (must be 2020-2030)")
+    if not (1 <= month <= 12):
+        raise ValueError(f"Invalid month: {month} (must be 1-12)")
+
+
 def _get_tabs_for_sheets(
     sheets_service, spreadsheet_ids: List[str]
 ) -> Dict[str, List[str]]:
@@ -127,11 +149,10 @@ def _export_sheet_tabs(
     files_ingested = 0
 
     for tab in tabs_to_process:
-        csv_path = (
-            RAW_DATA_DIR / output_subdir / f"{tab}.csv"
-            if output_subdir
-            else RAW_DATA_DIR / "import_export" / f"{tab}.csv"
-        )
+        if output_subdir:
+            csv_path = RAW_DATA_DIR / output_subdir / f"{tab}.csv"
+        else:
+            csv_path = path_config.import_export_staging_dir() / f"{tab}.csv"
 
         try:
             if export_tab_to_csv(sheets_service, sheet_id, tab, csv_path):
@@ -152,8 +173,12 @@ def _process_import_export_receipts(
 ) -> tuple[int, int]:
     """Handle folder-based import_export_receipts source.
 
-    Writes cleaned tabs directly to staging (data/01-staging/import_export/)
-    because they are pre-processed data from Google Sheets.
+    Writes tabs to raw directory (data/00-raw/import_export/).
+    Source type determines whether transform step is needed:
+    - "preprocessed": Data already clean, transform skipped
+    - "raw": Data needs transformation to staging
+
+    See ADR-005 for source_type configuration details.
     """
     files_ingested = 0
     error_count = 0
@@ -204,6 +229,17 @@ def _process_import_export_receipts(
         year_num = sheet["year"]
         month = sheet["month"]
 
+        # Validate year and month to prevent path traversal attacks
+        try:
+            _validate_year_month(year_num, month)
+        except ValueError as e:
+            logger.error(
+                f"Skipping {file_name}: {e}. "
+                f"This may indicate a path traversal attempt."
+            )
+            error_count += 1
+            continue
+
         # Export tabs with year_month prefix for import_export
         tabs = tabs_dict.get(file_id, [])
         if not tabs:
@@ -214,11 +250,32 @@ def _process_import_export_receipts(
 
         for tab in tabs_to_process:
             csv_path = (
-                STAGING_DATA_DIR / "import_export" / f"{year_num}_{month}_{tab}.csv"
-            )
+                path_config.get_raw_output_dir("import_export_receipts")
+                / f"{year_num}_{month}_{tab}.csv"
+            ).resolve()
+
+            raw_base_dir = path_config.get_raw_output_dir(
+                "import_export_receipts"
+            ).parent.resolve()
+
+            if not str(csv_path).startswith(str(raw_base_dir)):
+                raise ValueError(
+                    f"Invalid path: {csv_path} escapes raw directory. "
+                    f"This may indicate a path traversal attempt."
+                )
 
             try:
                 if export_tab_to_csv(sheets_service, file_id, tab, csv_path):
+                    # Validate schema before accepting to raw
+                    if not validate_schema(csv_path, tab):
+                        logger.error(
+                            f"Schema validation failed for {tab}: {csv_path}. "
+                            f"Deleting invalid file to prevent corrupt data."
+                        )
+                        csv_path.unlink(missing_ok=True)
+                        error_count += 1
+                        continue
+
                     logger.info(f"Exported {csv_path}")
                     files_ingested += 1
             except Exception as e:

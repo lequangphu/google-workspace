@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Generate Products data directly from staging data.
+"""Generate Products data from raw import_export data.
 
 This module consolidates extract_products.py and exporter.py to:
-1. Read product codes from chi_tiet_nhap_cleaned.csv
-2. Get Giá bán (max selling price) from chi_tiet_xuat_cleaned.csv
+1. Read product codes from Chi tiết nhập.csv
+2. Get Giá bán (max selling price) from Chi tiết xuất.csv
 3. Get Giá vốn and Tồn kho from clean_inventory.py output (Đơn giá cuối kỳ, Số lượng cuối kỳ)
 4. Enrich with Nhóm hàng, Thương hiệu, Tên hàng from Google Sheets
 5. Write to Google Spreadsheet (Sản phẩm tab) and optionally to data/03-erp-export/Products.xlsx
 
 Raw source: import_export_receipts
 Module: import_export_receipts
-Pipeline stage: data/01-staging/ → Google Spreadsheet
+Pipeline stage: data/00-raw/import_export/ → Google Spreadsheet
 """
 
 import logging
@@ -35,7 +35,7 @@ PIPELINE_CONFIG = WORKSPACE_ROOT / "pipeline.toml"
 _CONFIG = toml.load(PIPELINE_CONFIG) if PIPELINE_CONFIG.exists() else {}
 
 CONFIG = {
-    "staging_dir": Path.cwd() / "data" / "01-staging" / "import_export",
+    "raw_dir": Path.cwd() / "data" / "00-raw" / "import_export",
     "export_dir": Path.cwd() / "data" / "03-erp-export",
     "nhap_pattern": "*Chi tiết nhập*.csv",
     "xuat_pattern": "*Chi tiết xuất*.csv",
@@ -436,21 +436,21 @@ def write_to_spreadsheet(
 
 
 def process(
-    staging_dir: Optional[Path] = None, write_to_sheets: bool = True
+    raw_dir: Optional[Path] = None, write_to_sheets: bool = True
 ) -> Optional[Path]:
-    """Generate Products.xlsx from staging data.
+    """Generate Products.xlsx from raw import_export data.
 
     Args:
-        staging_dir: Directory with staged receipt data (defaults to config)
+        raw_dir: Directory with raw receipt data (defaults to config)
 
     Returns:
         Path to Products.xlsx or None if failed
     """
-    if staging_dir is None:
-        staging_dir = CONFIG["staging_dir"]
+    if raw_dir is None:
+        raw_dir = CONFIG["raw_dir"]
 
-    if not staging_dir.exists():
-        logger.error(f"Staging directory not found: {staging_dir}")
+    if not raw_dir.exists():
+        logger.error(f"Raw directory not found: {raw_dir}")
         return None
 
     logger.info("=" * 70)
@@ -458,15 +458,15 @@ def process(
     logger.info("=" * 70)
 
     try:
-        nhap_file = find_latest_file(staging_dir, CONFIG["nhap_pattern"])
+        nhap_file = find_latest_file(raw_dir, CONFIG["nhap_pattern"])
         nhap_df = StagingCache.get_dataframe(nhap_file)
         logger.info(f"Loaded nhập data: {len(nhap_df)} rows")
 
-        xuat_file = find_latest_file(staging_dir, CONFIG["xuat_pattern"])
+        xuat_file = find_latest_file(raw_dir, CONFIG["xuat_pattern"])
         xuat_df = StagingCache.get_dataframe(xuat_file)
         logger.info(f"Loaded xuất data: {len(xuat_df)} rows")
 
-        inventory_df = get_latest_inventory(staging_dir)
+        inventory_df = get_latest_inventory(raw_dir)
         logger.info(f"Loaded inventory data: {len(inventory_df)} products")
 
         # Load cutoff date from config, fallback to hardcoded default

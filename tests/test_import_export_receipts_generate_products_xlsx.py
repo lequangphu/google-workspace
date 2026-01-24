@@ -166,25 +166,25 @@ class TestProcessIntegration:
 
     def test_process_creates_output_file(self, tmp_path):
         """Test that process() creates Products.xlsx."""
-        staging_dir = tmp_path / "import_export"
-        staging_dir.mkdir()
+        raw_dir = tmp_path / "import_export"
+        raw_dir.mkdir()
 
         export_dir = tmp_path / "export"
         export_dir.mkdir()
 
-        nhap_file = staging_dir / "Chi tiết nhập_2025_01.csv"
+        nhap_file = raw_dir / "Chi tiết nhập_2025_01.csv"
         nhap_file.write_text("""Mã chứng từ,Ngày,Mã hàng,Tên hàng,Số lượng,Thành tiền
 CT001,2025-01-15,A,Product A,100,10000
 CT002,2025-01-16,B,Product B,50,5000
 """)
 
-        xuat_file = staging_dir / "Chi tiết xuất_2025_01.csv"
+        xuat_file = raw_dir / "Chi tiết xuất_2025_01.csv"
         xuat_file.write_text("""Mã chứng từ,Ngày,Tên khách hàng,Mã hàng,Tên hàng,Số lượng,Thành tiền
 CT003,2025-01-17,Khách A,A,Product A,20,2500
 CT004,2025-01-18,Khách B,B,Product B,10,1200
 """)
 
-        xnt_file = staging_dir / "Xuất nhập tồn 2025_01_12.csv"
+        xnt_file = raw_dir / "Xuất nhập tồn 2025_01_12.csv"
         xnt_file.write_text("""Mã hàng,Ngày,Tồn cuối kỳ,Giá trị cuối kỳ
 A,2025-01-31,80,8000.0
 B,2025-01-31,40,4800.0
@@ -210,20 +210,20 @@ B,2025-01-31,40,4800.0
                 }
             )
 
-            result = generate_products(staging_dir=staging_dir)
+            result = generate_products(raw_dir=raw_dir)
 
             assert result is not None
             assert result.exists()
             assert result.name == "Products.xlsx"
             assert result.parent == export_dir
 
-    def test_process_missing_staging_dir(self):
-        """Test that process() returns None when staging dir missing."""
+    def test_process_missing_raw_dir(self):
+        """Test that process() returns None when raw dir missing."""
         from src.modules.import_export_receipts.generate_products_xlsx import (
             process as generate_products,
         )
 
-        result = generate_products(staging_dir=Path("/nonexistent"))
+        result = generate_products(raw_dir=Path("/nonexistent"))
         assert result is None
 
 

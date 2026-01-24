@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Data loader with caching for all staging data sources.
+"""Data loader with caching for all data sources.
 
 This module provides a unified DataLoader class that uses StagingCache
-to load all staging data with automatic invalidation.
+to load data with automatic invalidation.
 
-Staging Data Flow:
-- Import/Export Receipts: Cleaned tabs written directly to staging by ingest.py
-  (data/01-staging/import_export/) because they are pre-processed in Google Sheets
-- Other sources: Still ingested to raw (data/00-raw/) and processed to staging
+Data Flow by Source Type (ADR-005):
+- "preprocessed": Data already clean, load from raw (e.g., import_export_receipts)
+- "raw": Data needs transformation, load from staging after transform runs
+
+Source type configuration is in pipeline.toml for each source.
 
 Replaces scattered pd.read_csv() calls in:
 - generate_products_xlsx.py
@@ -22,6 +23,7 @@ import pandas as pd
 import toml
 
 from ..utils.staging_cache import StagingCache
+from ..utils.path_config import PathConfig
 from pathlib import Path
 
 import logging
@@ -30,14 +32,14 @@ logger = logging.getLogger(__name__)
 
 
 class DataLoader:
-    """Unified data loader with built-in caching for staging data.
+    """Unified data loader with built-in caching.
 
-    Provides single entry point for all staging data reads with automatic
+    Provides single entry point for all data reads with automatic
     cache invalidation via StagingCache.
 
-    Note: Import/Export Receipts (cleaned tabs) are now written directly
-    to staging by ingest.py, bypassing the raw-to-staging transformation
-    that was previously handled by clean scripts.
+    Source type determines load location:
+    - "preprocessed": Load from raw (no transform needed)
+    - "raw": Load from staging (after transform runs)
 
     Usage:
         loader = DataLoader()
@@ -57,7 +59,7 @@ class DataLoader:
         else:
             self.config = config
 
-        self.staging_dir = Path(self.config.get("staging_dir", "data/01-staging"))
+        self.path_config = PathConfig()
         self.spreadsheet_ids = self._load_spreadsheet_ids()
         self.patterns = {
             "nhap": "*Chi tiết nhập*.csv",
@@ -83,8 +85,39 @@ class DataLoader:
                 ids[key.replace("_spreadsheet_id", "")] = self.config[key]
         return ids
 
+    def _get_source_type(self, source_key: str) -> str:
+        """Get source_type from configuration.
+
+        Args:
+            source_key: Source key from pipeline.toml (e.g., "import_export_receipts").
+
+        Returns:
+            Source type string ("preprocessed" or "raw"). Defaults to "raw" if not specified.
+        """
+        sources = self.config.get("sources", {})
+        if source_key not in sources:
+            return "raw"
+
+        return sources[source_key].get("source_type", "raw")
+
+    def _get_import_export_dir(self) -> Path:
+        """Get directory for import_export data based on source_type.
+
+        Returns:
+            Path to raw/import_export for "preprocessed" sources.
+            Path to staging/import_export for "raw" sources (after transform).
+        """
+        source_type = self._get_source_type("import_export_receipts")
+
+        if source_type == "preprocessed":
+            logger.debug("Loading import_export from raw (preprocessed source)")
+            return self.path_config.import_export_raw_dir()
+        else:
+            logger.debug("Loading import_export from staging (raw source)")
+            return self.path_config.import_export_staging_dir()
+
     def load_products(self) -> Dict[str, pd.DataFrame]:
-        import_export_dir = self.staging_dir / "import_export"
+        import_export_dir = self._get_import_export_dir()
 
         nhap_files = list(
             import_export_dir.glob(self.patterns.get("nhap", "*Chi tiết nhập*.csv"))
@@ -155,7 +188,7 @@ class DataLoader:
     def load_customers(
         self, sheets_service=None
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        import_export_dir = self.staging_dir / "import_export"
+        import_export_dir = self._get_import_export_dir()
 
         if sheets_service:
             master_df = self._load_thong_tin_kh(sheets_service)
@@ -384,7 +417,7 @@ class DataLoader:
     def load_suppliers(
         self, sheets_service=None
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        import_export_dir = self.staging_dir / "import_export"
+        import_export_dir = self._get_import_export_dir()
 
         if sheets_service:
             master_df = self._load_ma_cty(sheets_service)
